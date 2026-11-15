@@ -984,6 +984,8 @@ export function renderKineticScene(
         let scaleX = 1;
         let scaleY = 1;
         let rotRad = 0;
+        let skewX = 0;
+        let wipeProgress = -1;
         let blurPx = 0;
         let clipLine = false;
         let drawTextStr = word.displayText;
@@ -1115,6 +1117,80 @@ export function renderKineticScene(
           scaleX = Math.max(0.05, easeOutCubic(Math.min(1, e * 2.5)) + env * 0.38);
           scaleY = Math.max(0.05, easeOutCubic(Math.min(1, e * 2.5)) - env * 0.32);
           alpha *= clamp01(rawProgress * 3);
+        } else if (preset === 'marqueeRun') {
+          const e = easeOutCubic(clamp01(elapsed / 0.2));
+          alpha *= e;
+          const speedPx = 220 * motion.inSpeed;
+          const span = width + line.lineWidth + 140;
+          const halfSpan = span * 0.5;
+          const shifted = ((elapsed * speedPx + halfSpan) % span) - halfSpan;
+          offsetX = (lineIdx % 2 === 0 ? -1 : 1) * shifted;
+          offsetY = Math.sin(timeSec * 3.5 + word.wordIndex * 0.45) * 4 * scaleFactor;
+        } else if (preset === 'cascadeFall') {
+          const e = easeOutCubic(rawProgress);
+          offsetY = (1 - e) * -140 * scaleFactor;
+          scaleY = 1 + (1 - e) * 0.55;
+          alpha *= clamp01(rawProgress * 2.5);
+          extraGlow = rawProgress < 0.7;
+        } else if (preset === 'stretchSnap') {
+          const e = easeOutBack(rawProgress, 1.35);
+          const inv = 1 - clamp01(rawProgress);
+          scaleX = 1 + inv * 1.45;
+          scaleY = Math.max(0.4, 1 - inv * 0.35);
+          skewX = inv * -0.45;
+          offsetX = (1 - e) * -95 * scaleFactor;
+          alpha *= clamp01(rawProgress * 3);
+        } else if (preset === 'stampImpact') {
+          const slam = clamp01(rawProgress / 0.45);
+          const e = Math.pow(slam, 3);
+          const s = 2.6 - 1.6 * e;
+          scaleX = s;
+          scaleY = s;
+          alpha *= clamp01(rawProgress * 4);
+          if (rawProgress > 0.45 && rawProgress < 0.85) {
+            const shake = Math.sin(rawProgress * 65) * Math.exp(-(rawProgress - 0.45) * 9);
+            offsetX = shake * 8 * scaleFactor;
+            offsetY = shake * 5 * scaleFactor;
+          }
+        } else if (preset === 'horizonSkew') {
+          const e = easeOutCubic(rawProgress);
+          const dir = lineIdx % 2 === 0 ? -1 : 1;
+          offsetX = (1 - e) * dir * 240 * scaleFactor;
+          skewX = (1 - e) * -dir * 0.55;
+          alpha *= clamp01(rawProgress * 2.4);
+        } else if (preset === 'heartbeatBeat') {
+          const e = easeOutCubic(rawProgress);
+          alpha *= e;
+          const beatCycle = (timeSec * 1.5 * motion.inSpeed) % 1;
+          const thump1 = Math.exp(-Math.pow((beatCycle - 0.14) * 14, 2));
+          const thump2 = Math.exp(-Math.pow((beatCycle - 0.32) * 16, 2)) * 0.65;
+          const pulse = 1 + (thump1 + thump2) * (0.16 + audioEnergy * 0.18);
+          scaleX = pulse;
+          scaleY = pulse;
+        } else if (preset === 'revealWipe') {
+          wipeProgress = easeOutCubic(rawProgress);
+          alpha *= rawProgress > 0.01 ? 1 : 0;
+        } else if (preset === 'spiralTwist') {
+          const e = easeOutBack(rawProgress, 1.3);
+          alpha *= clamp01(rawProgress * 2.4);
+          const spin = (1 - clamp01(rawProgress)) * Math.PI;
+          scaleX = Math.max(0.05, Math.abs(Math.cos(spin)) * (0.5 + 0.5 * e));
+          scaleY = 0.65 + 0.35 * e;
+          rotRad = (1 - e) * -0.35;
+        } else if (preset === 'dominoTilt') {
+          const e = easeOutBack(rawProgress, 1.5);
+          alpha *= clamp01(rawProgress * 2.8);
+          rotRad = (1 - e) * -0.68;
+          skewX = (1 - e) * 0.32;
+          offsetY = (1 - clamp01(rawProgress)) * 18 * scaleFactor;
+        } else if (preset === 'floatDrift') {
+          const e = easeOutCubic(rawProgress);
+          alpha *= e;
+          blurPx = (1 - e) * 10 * scaleFactor;
+          const driftY = Math.sin(timeSec * 1.4 + word.wordIndex * 0.7) * 6 * scaleFactor;
+          const driftX = Math.cos(timeSec * 0.9 + word.wordIndex * 0.5) * 4 * scaleFactor;
+          offsetY = (1 - e) * 24 * scaleFactor + driftY;
+          offsetX = driftX;
         }
 
         if (alpha > 0.01 && drawTextStr.length > 0) {
@@ -1139,6 +1215,15 @@ export function renderKineticScene(
           const totalRot = rotRad + (word.rotateDeg * Math.PI) / 180;
           if (totalRot !== 0) ctx.rotate(totalRot);
           ctx.scale(scaleX, scaleY);
+          if (skewX !== 0) ctx.transform(1, 0, skewX, 1, 0, 0);
+
+          if (wipeProgress >= 0 && wipeProgress < 0.995) {
+            const clipLeft = -word.width * 0.65;
+            const clipWidth = word.width * 1.3 * wipeProgress;
+            ctx.beginPath();
+            ctx.rect(clipLeft, -word.height * 0.85, clipWidth, word.height * 1.7);
+            ctx.clip();
+          }
 
           const fontPx = word.height;
           ctx.font = `${word.fontWeight} ${fontPx}px "${word.fontFamily}", sans-serif`;
@@ -1266,6 +1351,17 @@ export function renderKineticScene(
               Math.max(3, fontPx * 0.08),
               fontPx * 0.9
             );
+          }
+
+          // Laser edge highlight for revealWipe
+          if (wipeProgress >= 0 && wipeProgress > 0.02 && wipeProgress < 0.98) {
+            const edgeX = -word.width * 0.65 + word.width * 1.3 * wipeProgress - 2 * scaleFactor;
+            ctx.save();
+            ctx.fillStyle = typo.emphasisColor;
+            ctx.shadowColor = typo.emphasisColor;
+            ctx.shadowBlur = 14 * scaleFactor;
+            ctx.fillRect(edgeX, -fontPx * 0.55, Math.max(2, 3.5 * scaleFactor), fontPx * 1.1);
+            ctx.restore();
           }
 
           ctx.restore();

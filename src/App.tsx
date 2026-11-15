@@ -23,6 +23,7 @@ import {
   sampleAudioEnergy,
 } from './utils/audioEnvelope';
 import { createDefaultProject, generateDemoAudioWavBlob } from './utils/demoProject';
+import { onFontLoaded, preloadProjectFonts } from './utils/googleFonts';
 import { parseSrt } from './utils/srtParser';
 
 type MobileSection = 'cues' | 'cueEdit' | 'style' | 'timeline';
@@ -104,7 +105,12 @@ export default function App() {
       setFontsTick((t) => t + 1);
     });
 
+    const unsubFont = onFontLoaded(() => {
+      setFontsTick((t) => t + 1);
+    });
+
     return () => {
+      unsubFont();
       if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
       if (bgAudioUrlRef.current) URL.revokeObjectURL(bgAudioUrlRef.current);
       if (videoUrlRef.current) URL.revokeObjectURL(videoUrlRef.current);
@@ -112,11 +118,17 @@ export default function App() {
   }, [loadAudioBlob]);
 
   useEffect(() => {
-    const fontName = project.typography.fontFamily;
-    document.fonts.load(`800 48px "${fontName}"`).then(() => {
+    const fontsToLoad: (string | null | undefined)[] = [project.typography.fontFamily];
+    for (const cue of project.cues) {
+      if (cue.customFont) fontsToLoad.push(cue.customFont);
+      for (const ws of Object.values(cue.wordStyles)) {
+        if (ws?.fontFamily) fontsToLoad.push(ws.fontFamily);
+      }
+    }
+    preloadProjectFonts(fontsToLoad).then(() => {
       setFontsTick((t) => t + 1);
     });
-  }, [project.typography.fontFamily]);
+  }, [project.typography.fontFamily, project.cues]);
 
   const totalDurationSec = useMemo(() => {
     const lastCue = project.cues.reduce((max, c) => Math.max(max, c.endSec), 0);
@@ -705,6 +717,7 @@ export default function App() {
           isLooping={isLooping}
           isMuted={isMuted}
           audioEnergy={audioEnergy}
+          fontLoadTick={fontsTick}
           selectedCueId={selectedCueId}
           bgVideoElement={computeBgLoopFrame(currentTimeSec).primary}
           bgVideoSecondary={computeBgLoopFrame(currentTimeSec).secondary}

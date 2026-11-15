@@ -1,3 +1,5 @@
+import { CURATED_GOOGLE_FONTS } from '../utils/googleFonts';
+
 export type AspectRatioId = '16:9' | '9:16' | '1:1' | '4:5';
 
 export type AnimationPresetId =
@@ -16,7 +18,17 @@ export type AnimationPresetId =
   | 'swingReveal'
   | 'splitCurtain'
   | 'kineticOrbit'
-  | 'squashPop';
+  | 'squashPop'
+  | 'marqueeRun'
+  | 'cascadeFall'
+  | 'stretchSnap'
+  | 'stampImpact'
+  | 'horizonSkew'
+  | 'heartbeatBeat'
+  | 'revealWipe'
+  | 'spiralTwist'
+  | 'dominoTilt'
+  | 'floatDrift';
 
 export type EmphasisStyle =
   | 'color'
@@ -172,19 +184,12 @@ export const ASPECT_RATIOS: Record<
   '4:5': { label: '4:5 Portrait', width: 1080, height: 1350, ratio: 4 / 5 },
 };
 
-export const VIDEO_FONTS: { id: string; label: string; category: string }[] = [
-  { id: 'Be Vietnam Pro', label: 'Be Vietnam Pro', category: 'Geometric Sans' },
-  { id: 'Montserrat', label: 'Montserrat', category: 'Kinetic Sans' },
-  { id: 'Anton', label: 'Anton', category: 'Poster Impact' },
-  { id: 'Oswald', label: 'Oswald', category: 'Condensed Sans' },
-  { id: 'Bricolage Grotesque', label: 'Bricolage Grotesque', category: 'Expressive Sans' },
-  { id: 'Archivo', label: 'Archivo', category: 'Neo-Grotesque' },
-  { id: 'Manrope', label: 'Manrope', category: 'Modern Sans' },
-  { id: 'Playfair Display', label: 'Playfair Display', category: 'Editorial Serif' },
-  { id: 'Fraunces', label: 'Fraunces', category: 'Soft Display Serif' },
-  { id: 'Lora', label: 'Lora', category: 'Classic Serif' },
-  { id: 'JetBrains Mono', label: 'JetBrains Mono', category: 'Technical Mono' },
-];
+export const VIDEO_FONTS: { id: string; label: string; category: string }[] =
+  CURATED_GOOGLE_FONTS.map((f) => ({
+    id: f.id,
+    label: f.label,
+    category: f.category,
+  }));
 
 export const ANIMATION_PRESETS: {
   id: AnimationPresetId;
@@ -207,6 +212,16 @@ export const ANIMATION_PRESETS: {
   { id: 'splitCurtain', name: 'Center Split', desc: 'Tách đôi mở rèm từ tâm chữ' },
   { id: 'kineticOrbit', name: 'Spiral Arc', desc: 'Lượn vòng cung xoáy vào hàng' },
   { id: 'squashPop', name: 'Jelly Pop', desc: 'Co giãn khối dẻo vui nhộn' },
+  { id: 'marqueeRun', name: 'Marquee Ticker', desc: 'Chữ chạy băng chuyền ngang liên tục' },
+  { id: 'cascadeFall', name: 'Matrix Cascade', desc: 'Thác đổ trượt dọc nối đuôi nhau' },
+  { id: 'stretchSnap', name: 'Whip Stretch', desc: 'Kéo giãn tốc độ cao giật khựng sắc' },
+  { id: 'stampImpact', name: 'Heavy Stamp', desc: 'Đóng dấu mộc mạnh kèm rung chấn' },
+  { id: 'horizonSkew', name: 'Speed Skew', desc: 'Nghiêng tốc độ lao ngang phanh gấp' },
+  { id: 'heartbeatBeat', name: 'Heartbeat Pulse', desc: 'Phóng nhịp tim đập hòa theo Beat' },
+  { id: 'revealWipe', name: 'Laser Wipe', desc: 'Quét tia sáng mở dần từng từ sắc nét' },
+  { id: 'spiralTwist', name: '3D Twist', desc: 'Xoay vặn trục 3D thu phóng tiến vào' },
+  { id: 'dominoTilt', name: 'Domino Knock', desc: 'Đổ domino nối tiếp rồi đứng thẳng' },
+  { id: 'floatDrift', name: 'Cinema Drift', desc: 'Trôi bồng bềnh điện ảnh nhẹ nhàng' },
 ];
 
 export const DYNAMIC_BG_PRESETS: {

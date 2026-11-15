@@ -7,9 +7,8 @@ import {
   StudioProject,
 } from '../types/studio';
 import { renderKineticScene } from '../engine/kineticRenderer';
-import { exportWithBrowserWasm } from '../engine/clientWasmExport';
-import { exportMp4WithWebCodecs } from '../engine/webCodecsMp4Export';
 import { sampleAudioEnergy } from '../utils/audioEnvelope';
+import { preloadProjectFonts } from '../utils/googleFonts';
 
 interface ExportModalProps {
   isOpen: boolean;
@@ -284,14 +283,22 @@ export const ExportModal: React.FC<ExportModalProps> = ({
       setErrorMsg(null);
       setCodecNote(null);
       setDownloadInfo(null);
-      setStatusLabel('Đang khởi tạo tiến trình render...');
+      setStatusLabel('Đang tải font chữ Google Fonts & khởi tạo render...');
 
+      await preloadProjectFonts([
+        project.typography.fontFamily,
+        ...project.cues.flatMap((c) => [
+          c.customFont,
+          ...Object.values(c.wordStyles).map((w) => w?.fontFamily),
+        ]),
+      ]);
       await document.fonts.ready;
 
       const serverReady = await checkServerAvailable();
       if (!serverReady) {
         if (format === 'mp4') {
           try {
+            const { exportMp4WithWebCodecs } = await import('../engine/webCodecsMp4Export');
             const wcResult = await exportMp4WithWebCodecs({
               project,
               width,
@@ -334,6 +341,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
           }
         }
 
+        const { exportWithBrowserWasm } = await import('../engine/clientWasmExport');
         const result = await exportWithBrowserWasm({
           project,
           format,

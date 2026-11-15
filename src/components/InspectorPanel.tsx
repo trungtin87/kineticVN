@@ -26,9 +26,16 @@ import {
   TextAlignMode,
   TextTransformMode,
   TypographyConfig,
-  VIDEO_FONTS,
   WordStyleOverride,
 } from '../types/studio';
+import {
+  CURATED_GOOGLE_FONTS,
+  ensureGoogleFontLoaded,
+  FontOption,
+  getStoredCustomFonts,
+  removeCustomGoogleFont,
+  saveCustomGoogleFont,
+} from '../utils/googleFonts';
 import { autoWrapCueText, balanceTwoLines, tokenizeCueText } from '../utils/srtParser';
 import { InspectorTab } from './TopBar';
 
@@ -113,6 +120,44 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
   className = '',
 }) => {
   const [activeWordIdx, setActiveWordIdx] = useState<number | null>(null);
+  const [customFonts, setCustomFonts] = useState<FontOption[]>(() => getStoredCustomFonts());
+  const [fontCategory, setFontCategory] = useState<'ALL' | FontOption['category']>('ALL');
+  const [fontQuery, setFontQuery] = useState('');
+  const [customFontInput, setCustomFontInput] = useState('');
+  const [fontLoadingMsg, setFontLoadingMsg] = useState<string | null>(null);
+  const [fontErrorMsg, setFontErrorMsg] = useState<string | null>(null);
+  const [motionQuery, setMotionQuery] = useState('');
+
+  const allFonts: FontOption[] = [
+    ...customFonts,
+    ...CURATED_GOOGLE_FONTS.filter(
+      (cf) => !customFonts.some((u) => u.id.toLowerCase() === cf.id.toLowerCase())
+    ),
+  ];
+
+  const handleSelectGlobalFont = async (fontName: string) => {
+    onUpdateTypography({ fontFamily: fontName });
+    await ensureGoogleFontLoaded(fontName);
+  };
+
+  const handleLoadCustomGoogleFont = async () => {
+    const clean = customFontInput.trim().replace(/\s+/g, ' ');
+    if (!clean) return;
+    setFontErrorMsg(null);
+    setFontLoadingMsg(`Đang tải "${clean}" từ Google Fonts...`);
+    const ok = await ensureGoogleFontLoaded(clean);
+    setFontLoadingMsg(null);
+    if (!ok) {
+      setFontErrorMsg(
+        `Không tìm thấy font "${clean}" trên Google Fonts. Hãy kiểm tra đúng tên font (VD: Syne, Lobster, Paytone One).`
+      );
+      return;
+    }
+    const updated = saveCustomGoogleFont(clean);
+    setCustomFonts(updated);
+    onUpdateTypography({ fontFamily: clean });
+    setCustomFontInput('');
+  };
 
   const toggleWordEmphasis = (cue: SubtitleCue, wordIdx: number) => {
     const existing = cue.wordStyles[wordIdx];
@@ -493,15 +538,17 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                             <label className="text-[10px] text-[#8E95A5]">Font riêng từ này</label>
                             <select
                               value={currentFont}
-                              onChange={(e) =>
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                if (val) ensureGoogleFontLoaded(val);
                                 applyPatchToTargetWords(selectedCue, {
-                                  fontFamily: e.target.value || null,
-                                })
-                              }
+                                  fontFamily: val || null,
+                                });
+                              }}
                               className="w-full bg-[#111318] border border-white/10 rounded px-2 py-1.5 text-[11px] text-[#E2E5EC] focus:outline-none focus:border-[#FF5A1F]"
                             >
                               <option value="">Theo câu</option>
-                              {VIDEO_FONTS.map((f) => (
+                              {allFonts.map((f) => (
                                 <option key={f.id} value={f.id}>
                                   {f.label}
                                 </option>
@@ -745,15 +792,17 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                       <label className="text-[11px] text-[#8E95A5]">Font câu này</label>
                       <select
                         value={selectedCue.customFont || ''}
-                        onChange={(e) =>
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          if (val) ensureGoogleFontLoaded(val);
                           onUpdateCue(selectedCue.id, {
-                            customFont: e.target.value || null,
-                          })
-                        }
+                            customFont: val || null,
+                          });
+                        }}
                         className="w-full bg-[#171A21] border border-white/10 rounded px-2 py-1.5 text-xs text-[#E2E5EC] focus:outline-none focus:border-[#FF5A1F]"
                       >
                         <option value="">Theo mặc định</option>
-                        {VIDEO_FONTS.map((f) => (
+                        {allFonts.map((f) => (
                           <option key={f.id} value={f.id}>
                             {f.label}
                           </option>
@@ -771,15 +820,30 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
           <>
             {/* 1. Kinetic Animation Presets */}
             <div className="space-y-2.5">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between gap-2">
                 <label className="text-xs font-semibold text-[#E2E5EC]">
                   Hiệu ứng chuyển động chữ
                 </label>
                 <span className="text-[11px] text-[#8E95A5]">{ANIMATION_PRESETS.length} kiểu</span>
               </div>
 
-              <div className="grid grid-cols-2 gap-1.5">
-                {ANIMATION_PRESETS.map((preset) => {
+              <input
+                type="text"
+                value={motionQuery}
+                onChange={(e) => setMotionQuery(e.target.value)}
+                placeholder="Tìm hiệu ứng (VD: marquee, skew, stamp, twist...)"
+                className="w-full bg-[#171A21] border border-white/10 rounded-md px-2.5 py-1.5 text-xs text-[#E2E5EC] placeholder-[#6B7280] focus:outline-none focus:border-[#FF5A1F]"
+              />
+
+              <div className="grid grid-cols-2 gap-1.5 max-h-64 overflow-y-auto pr-0.5">
+                {ANIMATION_PRESETS.filter((preset) => {
+                  const q = motionQuery.trim().toLowerCase();
+                  if (!q) return true;
+                  return (
+                    preset.name.toLowerCase().includes(q) ||
+                    preset.desc.toLowerCase().includes(q)
+                  );
+                }).map((preset) => {
                   const active = motion.preset === preset.id;
                   return (
                     <button
@@ -845,26 +909,141 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
               </label>
             </div>
 
-            {/* 2. Font & Styling */}
+            {/* 2. Font & Google Fonts Integration */}
             <div className="space-y-3 pt-4 border-t border-white/8">
-              <label className="text-xs font-semibold text-[#E2E5EC] block">
-                Kiểu chữ &amp; Bố cục toàn cục
-              </label>
-
-              <div className="space-y-1">
-                <label className="text-[11px] text-[#8E95A5]">Font chữ (Hỗ trợ Tiếng Việt)</label>
-                <select
-                  value={typography.fontFamily}
-                  onChange={(e) => onUpdateTypography({ fontFamily: e.target.value })}
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-semibold text-[#E2E5EC]">
+                  Google Fonts &amp; Kiểu chữ ({allFonts.length} font)
+                </label>
+                <span
                   style={{ fontFamily: typography.fontFamily }}
-                  className="w-full bg-[#171A21] border border-white/10 rounded-md px-3 py-2 text-sm text-[#F4F5F7] focus:outline-none focus:border-[#FF5A1F]"
+                  className="text-xs text-[#FF5A1F] font-semibold truncate max-w-[140px]"
                 >
-                  {VIDEO_FONTS.map((f) => (
-                    <option key={f.id} value={f.id} style={{ fontFamily: f.id }}>
-                      {f.label} — {f.category}
-                    </option>
-                  ))}
-                </select>
+                  {typography.fontFamily}
+                </span>
+              </div>
+
+              {/* Category Chips */}
+              <div className="flex flex-wrap gap-1">
+                {(
+                  [
+                    { id: 'ALL', label: 'Tất cả' },
+                    { id: 'Display', label: 'Poster' },
+                    { id: 'Sans', label: 'Sans' },
+                    { id: 'Serif', label: 'Serif' },
+                    { id: 'Script', label: 'Viết tay' },
+                    { id: 'Mono', label: 'Tech/Mono' },
+                  ] as const
+                ).map((cat) => (
+                  <button
+                    key={cat.id}
+                    type="button"
+                    onClick={() => setFontCategory(cat.id)}
+                    className={`px-2 py-1 rounded text-[10px] font-medium transition-colors cursor-pointer ${
+                      fontCategory === cat.id
+                        ? 'bg-[#FF5A1F] text-white'
+                        : 'bg-[#171A21] text-[#9BA3B4] hover:text-white border border-white/8'
+                    }`}
+                  >
+                    {cat.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Font Search */}
+              <input
+                type="text"
+                value={fontQuery}
+                onChange={(e) => setFontQuery(e.target.value)}
+                placeholder="Lọc font có sẵn..."
+                className="w-full bg-[#171A21] border border-white/10 rounded-md px-2.5 py-1.5 text-xs text-[#E2E5EC] placeholder-[#6B7280] focus:outline-none focus:border-[#FF5A1F]"
+              />
+
+              {/* Visual Font Picker Grid */}
+              <div className="max-h-44 overflow-y-auto space-y-1 p-1.5 bg-[#0E1015] border border-white/8 rounded-md">
+                {allFonts
+                  .filter((f) => {
+                    if (fontCategory !== 'ALL' && f.category !== fontCategory) return false;
+                    const q = fontQuery.trim().toLowerCase();
+                    if (!q) return true;
+                    return (
+                      f.label.toLowerCase().includes(q) || f.category.toLowerCase().includes(q)
+                    );
+                  })
+                  .map((f) => {
+                    const active = typography.fontFamily.toLowerCase() === f.id.toLowerCase();
+                    const isCustom = customFonts.some(
+                      (cf) => cf.id.toLowerCase() === f.id.toLowerCase()
+                    );
+                    return (
+                      <div
+                        key={f.id}
+                        className={`flex items-center justify-between gap-2 px-2.5 py-1.5 rounded border transition-colors ${
+                          active
+                            ? 'bg-[#FF5A1F]/16 border-[#FF5A1F] text-white'
+                            : 'bg-[#161921] border-white/6 text-[#D5D9E2] hover:bg-[#1D212B]'
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onMouseEnter={() => ensureGoogleFontLoaded(f.id)}
+                          onClick={() => handleSelectGlobalFont(f.id)}
+                          className="flex-1 text-left flex items-center justify-between gap-2 cursor-pointer min-w-0"
+                        >
+                          <span
+                            style={{ fontFamily: `"${f.id}", sans-serif` }}
+                            className="text-xs font-semibold truncate"
+                          >
+                            {f.label}
+                          </span>
+                          <span className="text-[10px] text-[#8E95A5] shrink-0">
+                            {isCustom ? 'Tự thêm' : f.category}
+                          </span>
+                        </button>
+                        {isCustom && (
+                          <button
+                            type="button"
+                            onClick={() => setCustomFonts(removeCustomGoogleFont(f.id))}
+                            title="Xóa font tự thêm"
+                            className="p-0.5 text-[#8E95A5] hover:text-red-400 cursor-pointer shrink-0"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+              </div>
+
+              {/* Dynamic Custom Google Font Loader */}
+              <div className="p-2.5 bg-[#151821] border border-white/8 rounded-md space-y-1.5">
+                <label className="text-[11px] font-medium text-[#D5D9E2] block">
+                  Tải thêm font bất kỳ từ Google Fonts
+                </label>
+                <div className="flex gap-1.5">
+                  <input
+                    type="text"
+                    value={customFontInput}
+                    onChange={(e) => setCustomFontInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleLoadCustomGoogleFont();
+                      }
+                    }}
+                    placeholder="VD: Syne, Lobster, Sedgwick Ave..."
+                    className="flex-1 min-w-0 bg-[#0E1015] border border-white/10 rounded px-2.5 py-1.5 text-xs text-[#F4F5F7] placeholder-[#6B7280] focus:outline-none focus:border-[#FF5A1F]"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleLoadCustomGoogleFont}
+                    className="px-2.5 py-1.5 bg-[#FF5A1F] hover:bg-[#E84D14] text-white text-[11px] font-semibold rounded cursor-pointer shrink-0"
+                  >
+                    Tải font
+                  </button>
+                </div>
+                {fontLoadingMsg && <p className="text-[10px] text-[#38BDF8]">{fontLoadingMsg}</p>}
+                {fontErrorMsg && <p className="text-[10px] text-red-400">{fontErrorMsg}</p>}
               </div>
 
               <div className="grid grid-cols-2 gap-3">

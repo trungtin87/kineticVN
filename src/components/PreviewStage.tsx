@@ -22,6 +22,7 @@ interface PreviewStageProps {
   isLooping: boolean;
   isMuted: boolean;
   audioEnergy: number;
+  fontLoadTick?: number;
   selectedCueId: string | null;
   bgVideoElement: HTMLVideoElement | null;
   bgVideoSecondary?: HTMLVideoElement | null;
@@ -42,6 +43,7 @@ export const PreviewStage: React.FC<PreviewStageProps> = ({
   isLooping,
   isMuted,
   audioEnergy,
+  fontLoadTick = 0,
   selectedCueId,
   bgVideoElement,
   bgVideoSecondary = null,
@@ -130,6 +132,7 @@ export const PreviewStage: React.FC<PreviewStageProps> = ({
     aspect.ratio,
     currentTimeSec,
     audioEnergy,
+    fontLoadTick,
     bgVideoElement,
     bgVideoSecondary,
     bgVideoBlendAlpha,

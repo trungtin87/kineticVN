@@ -914,13 +914,50 @@ with zipfile.ZipFile(out_zip, 'w', zipfile.ZIP_DEFLATED) as zf:
   const httpServer = http.createServer(app);
 
   if (process.env.NODE_ENV !== 'production') {
+    const isCloudRunPreview = Boolean(
+      process.env.K_SERVICE || process.env.APP_URL?.includes('.run.app')
+    );
+    const disableHmr = process.env.DISABLE_HMR === 'true' || isCloudRunPreview;
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
-        hmr: process.env.DISABLE_HMR === 'true' ? false : { server: httpServer },
+        ws: disableHmr ? false : { server: httpServer },
+        hmr: disableHmr ? false : true,
       },
       appType: 'spa',
     });
+
+    if (disableHmr) {
+      app.use((req, res, next) => {
+        if (!req.url.startsWith('/@vite/client')) {
+          return next();
+        }
+        delete req.headers['accept-encoding'];
+        const origEnd = res.end.bind(res);
+        const chunks: Buffer[] = [];
+        res.write = ((chunk: unknown) => {
+          if (chunk) {
+            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+          }
+          return true;
+        }) as typeof res.write;
+        res.end = ((chunk?: unknown) => {
+          if (chunk) {
+            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+          }
+          const body = Buffer.concat(chunks)
+            .toString('utf8')
+            .replace(
+              'transport.connect(createHMRHandler(handleMessage));',
+              'transport.send = async () => {}; transport.connect = async () => {}; transport.invoke = async () => ({}); /* HMR WebSocket disabled in preview */'
+            );
+          res.removeHeader('Content-Length');
+          return origEnd(body, 'utf8');
+        }) as typeof res.end;
+        next();
+      });
+    }
+
     app.use(vite.middlewares);
   } else {
     app.use(express.static(path.resolve('dist')));
