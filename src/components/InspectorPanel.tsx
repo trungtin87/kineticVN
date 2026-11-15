@@ -1,0 +1,1690 @@
+import React, { useState } from 'react';
+import {
+  AlignCenter,
+  AlignLeft,
+  AlignRight,
+  Film,
+  Layers,
+  RotateCcw,
+  Sparkles,
+  Type,
+  Upload,
+  Volume2,
+  VolumeX,
+  Wand2,
+  X,
+} from 'lucide-react';
+import {
+  ANIMATION_PRESETS,
+  AnimationPresetId,
+  BackgroundConfig,
+  DYNAMIC_BG_PRESETS,
+  EffectsConfig,
+  EmphasisStyle,
+  MotionConfig,
+  SubtitleCue,
+  TextAlignMode,
+  TextTransformMode,
+  TypographyConfig,
+  VIDEO_FONTS,
+  WordStyleOverride,
+} from '../types/studio';
+import { autoWrapCueText, balanceTwoLines, tokenizeCueText } from '../utils/srtParser';
+import { InspectorTab } from './TopBar';
+
+interface InspectorPanelProps {
+  activeTab: InspectorTab;
+  onTabChange: (tab: InspectorTab) => void;
+  selectedCue: SubtitleCue | null;
+  typography: TypographyConfig;
+  motion: MotionConfig;
+  background: BackgroundConfig;
+  effects?: EffectsConfig;
+  bgVideoName: string | null;
+  bgVideoDurationSec?: number;
+  totalDurationSec?: number;
+  bgAudioName?: string | null;
+  onUpdateCue: (cueId: string, patch: Partial<SubtitleCue>) => void;
+  onUpdateTypography: (patch: Partial<TypographyConfig>) => void;
+  onUpdateMotion: (patch: Partial<MotionConfig>) => void;
+  onUpdateBackground: (patch: Partial<BackgroundConfig>) => void;
+  onUpdateEffects?: (patch: Partial<EffectsConfig>) => void;
+  onUploadBgVideo: (file: File) => void;
+  onClearBgVideo: () => void;
+  onUploadBgAudio?: (file: File) => void;
+  onClearBgAudio?: () => void;
+  className?: string;
+}
+
+const EMPHASIS_SWATCHES = [
+  '#FF5A1F',
+  '#FACC15',
+  '#38BDF8',
+  '#34D399',
+  '#F43F5E',
+  '#A78BFA',
+  '#FFFFFF',
+];
+
+const EMPHASIS_STYLES: { id: EmphasisStyle; label: string }[] = [
+  { id: 'color', label: 'Đổi màu' },
+  { id: 'scaleColor', label: 'Phóng to + Màu' },
+  { id: 'highlightBox', label: 'Khối Highlight' },
+  { id: 'underlineSweep', label: 'Gạch chân chạy' },
+  { id: 'glow', label: 'Phát sáng Glow' },
+  { id: 'outlineBadge', label: 'Khung viền Pill' },
+  { id: 'doubleShadow', label: 'Bóng nổi 3D' },
+  { id: 'gradientFill', label: 'Chuyển sắc Gradient' },
+];
+
+const ANCHOR_POINTS: { x: number; y: number; label: string }[] = [
+  { x: 0.14, y: 0.18, label: 'Trên Trái' },
+  { x: 0.5, y: 0.18, label: 'Trên Giữa' },
+  { x: 0.86, y: 0.18, label: 'Trên Phải' },
+  { x: 0.14, y: 0.5, label: 'Giữa Trái' },
+  { x: 0.5, y: 0.5, label: 'Chính Giữa' },
+  { x: 0.86, y: 0.5, label: 'Giữa Phải' },
+  { x: 0.14, y: 0.82, label: 'Dưới Trái' },
+  { x: 0.5, y: 0.82, label: 'Dưới Giữa' },
+  { x: 0.86, y: 0.82, label: 'Dưới Phải' },
+];
+
+export const InspectorPanel: React.FC<InspectorPanelProps> = ({
+  activeTab,
+  onTabChange,
+  selectedCue,
+  typography,
+  motion,
+  background,
+  effects,
+  bgVideoName,
+  bgVideoDurationSec = 0,
+  totalDurationSec = 0,
+  bgAudioName = null,
+  onUpdateCue,
+  onUpdateTypography,
+  onUpdateMotion,
+  onUpdateBackground,
+  onUpdateEffects,
+  onUploadBgVideo,
+  onClearBgVideo,
+  onUploadBgAudio,
+  onClearBgAudio,
+  className = '',
+}) => {
+  const [activeWordIdx, setActiveWordIdx] = useState<number | null>(null);
+
+  const toggleWordEmphasis = (cue: SubtitleCue, wordIdx: number) => {
+    const existing = cue.wordStyles[wordIdx];
+    const nextStyles = { ...cue.wordStyles };
+    if (existing?.emphasized) {
+      // If another word was focused (or none), focus this word first so user can edit it; clicking again turns it off
+      if (activeWordIdx !== wordIdx) {
+        setActiveWordIdx(wordIdx);
+        return;
+      }
+      delete nextStyles[wordIdx];
+      setActiveWordIdx(null);
+    } else {
+      nextStyles[wordIdx] = {
+        emphasized: true,
+        color: typography.emphasisColor,
+        style: typography.emphasisStyle,
+      };
+      setActiveWordIdx(wordIdx);
+    }
+    onUpdateCue(cue.id, { wordStyles: nextStyles });
+  };
+
+  const updateWordStyle = (
+    cue: SubtitleCue,
+    wordIdx: number,
+    patch: Partial<WordStyleOverride>
+  ) => {
+    const existing = cue.wordStyles[wordIdx] || { emphasized: true };
+    onUpdateCue(cue.id, {
+      wordStyles: {
+        ...cue.wordStyles,
+        [wordIdx]: { ...existing, emphasized: true, ...patch },
+      },
+    });
+  };
+
+  const applyPatchToTargetWords = (
+    cue: SubtitleCue,
+    patch: Partial<WordStyleOverride>
+  ) => {
+    if (activeWordIdx !== null && cue.wordStyles[activeWordIdx]) {
+      updateWordStyle(cue, activeWordIdx, patch);
+    } else {
+      const updated = { ...cue.wordStyles };
+      for (const k of Object.keys(updated)) {
+        updated[Number(k)] = { ...updated[Number(k)], ...patch };
+      }
+      onUpdateCue(cue.id, { wordStyles: updated });
+    }
+  };
+
+  return (
+    <aside
+      className={`w-full lg:w-[368px] bg-[#111318] lg:border-l border-white/8 flex flex-col shrink-0 min-h-0 ${className}`}
+    >
+      {/* Inspector Tab Switcher */}
+      <div className="p-2 border-b border-white/8 grid grid-cols-3 gap-1 bg-[#0E1015] shrink-0">
+        <button
+          type="button"
+          onClick={() => onTabChange('cue')}
+          className={`px-2 py-2 text-xs font-medium rounded-md flex items-center justify-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap ${
+            activeTab === 'cue'
+              ? 'bg-[#1D212B] text-[#F4F5F7]'
+              : 'text-[#8E95A5] hover:text-[#F4F5F7]'
+          }`}
+        >
+          <Wand2 className="w-3.5 h-3.5" />
+          <span>Câu &amp; Từ</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => onTabChange('typography')}
+          className={`px-2 py-2 text-xs font-medium rounded-md flex items-center justify-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap ${
+            activeTab === 'typography'
+              ? 'bg-[#1D212B] text-[#F4F5F7]'
+              : 'text-[#8E95A5] hover:text-[#F4F5F7]'
+          }`}
+        >
+          <Type className="w-3.5 h-3.5" />
+          <span>Font &amp; Motion</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => onTabChange('background')}
+          className={`px-2 py-2 text-xs font-medium rounded-md flex items-center justify-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap ${
+            activeTab === 'background'
+              ? 'bg-[#1D212B] text-[#F4F5F7]'
+              : 'text-[#8E95A5] hover:text-[#F4F5F7]'
+          }`}
+        >
+          <Layers className="w-3.5 h-3.5" />
+          <span>Nền động</span>
+        </button>
+      </div>
+
+      {/* Scrollable Inspector Body */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-6 min-h-0">
+        {activeTab === 'cue' && (
+          <>
+            {!selectedCue ? (
+              <div className="py-12 text-center space-y-2">
+                <p className="text-sm font-medium text-[#D5D9E2]">Chưa chọn câu phụ đề</p>
+                <p className="text-xs text-[#8E95A5]">
+                  Chọn một câu bên trái hoặc trên timeline để sửa xuống dòng, nhấn màu từ và vị trí.
+                </p>
+              </div>
+            ) : (
+              <>
+                {/* 1. Text & Line Breaks */}
+                <div className="space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-semibold text-[#E2E5EC]">
+                      Nội dung &amp; Xuống dòng (Enter)
+                    </label>
+                    <span className="text-[11px] font-mono-tabular text-[#8E95A5]">
+                      {(selectedCue.endSec - selectedCue.startSec).toFixed(2)}s
+                    </span>
+                  </div>
+
+                  <textarea
+                    rows={3}
+                    value={selectedCue.text}
+                    onChange={(e) => onUpdateCue(selectedCue.id, { text: e.target.value })}
+                    className="w-full bg-[#171A21] border border-white/10 focus:border-[#FF5A1F] rounded-md p-2.5 text-sm text-[#F4F5F7] leading-relaxed focus:outline-none resize-y"
+                    placeholder="Nhập chữ và nhấn Enter để xuống dòng..."
+                  />
+
+                  <div className="grid grid-cols-4 gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onUpdateCue(selectedCue.id, { text: balanceTwoLines(selectedCue.text) })
+                      }
+                      className="px-2 py-1.5 bg-[#171A21] hover:bg-[#20242E] border border-white/8 rounded text-[11px] text-[#D5D9E2] cursor-pointer whitespace-nowrap"
+                    >
+                      2 dòng đều
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onUpdateCue(selectedCue.id, { text: autoWrapCueText(selectedCue.text, 2) })
+                      }
+                      className="px-2 py-1.5 bg-[#171A21] hover:bg-[#20242E] border border-white/8 rounded text-[11px] text-[#D5D9E2] cursor-pointer whitespace-nowrap"
+                    >
+                      2 từ/dòng
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onUpdateCue(selectedCue.id, { text: autoWrapCueText(selectedCue.text, 3) })
+                      }
+                      className="px-2 py-1.5 bg-[#171A21] hover:bg-[#20242E] border border-white/8 rounded text-[11px] text-[#D5D9E2] cursor-pointer whitespace-nowrap"
+                    >
+                      3 từ/dòng
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onUpdateCue(selectedCue.id, {
+                          text: selectedCue.text.replace(/\n+/g, ' ').trim(),
+                        })
+                      }
+                      className="px-2 py-1.5 bg-[#171A21] hover:bg-[#20242E] border border-white/8 rounded text-[11px] text-[#D5D9E2] cursor-pointer whitespace-nowrap"
+                    >
+                      1 dòng
+                    </button>
+                  </div>
+                </div>
+
+                {/* Timing Fine Tuning */}
+                <div className="grid grid-cols-2 gap-3 pt-2 border-t border-white/8">
+                  <div className="space-y-1">
+                    <label className="text-[11px] text-[#8E95A5]">Bắt đầu (giây)</label>
+                    <input
+                      type="number"
+                      step={0.05}
+                      min={0}
+                      value={Number(selectedCue.startSec.toFixed(2))}
+                      onChange={(e) => {
+                        const val = Math.max(0, Number(e.target.value) || 0);
+                        onUpdateCue(selectedCue.id, {
+                          startSec: val,
+                          endSec: Math.max(val + 0.15, selectedCue.endSec),
+                        });
+                      }}
+                      className="w-full bg-[#171A21] border border-white/10 rounded px-2.5 py-1.5 text-xs font-mono-tabular text-[#F4F5F7] focus:outline-none focus:border-[#FF5A1F]"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[11px] text-[#8E95A5]">Kết thúc (giây)</label>
+                    <input
+                      type="number"
+                      step={0.05}
+                      min={selectedCue.startSec + 0.15}
+                      value={Number(selectedCue.endSec.toFixed(2))}
+                      onChange={(e) => {
+                        const val = Math.max(
+                          selectedCue.startSec + 0.15,
+                          Number(e.target.value) || selectedCue.startSec + 0.15
+                        );
+                        onUpdateCue(selectedCue.id, { endSec: val });
+                      }}
+                      className="w-full bg-[#171A21] border border-white/10 rounded px-2.5 py-1.5 text-xs font-mono-tabular text-[#F4F5F7] focus:outline-none focus:border-[#FF5A1F]"
+                    />
+                  </div>
+                </div>
+
+                {/* 2. Word-by-Word Emphasis Selector */}
+                <div className="space-y-3 pt-3 border-t border-white/8">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-semibold text-[#E2E5EC]">
+                      Nhấn mạnh &amp; Đổi màu từng từ
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onUpdateCue(selectedCue.id, { wordStyles: {} });
+                        setActiveWordIdx(null);
+                      }}
+                      className="text-[11px] text-[#8E95A5] hover:text-[#F4F5F7] cursor-pointer"
+                    >
+                      Bỏ chọn hết
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-[#8E95A5]">
+                    Nhấn vào từng từ bên dưới để bật/tắt hiệu ứng nhấn mạnh và chọn màu riêng.
+                  </p>
+
+                  <div className="flex flex-wrap gap-1.5 p-2.5 bg-[#0E1015] border border-white/8 rounded-md">
+                    {tokenizeCueText(selectedCue.text).flatWords.map((tok) => {
+                      const ws = selectedCue.wordStyles[tok.wordIndex];
+                      const isEmph = Boolean(ws?.emphasized);
+                      const isFocused = activeWordIdx === tok.wordIndex && isEmph;
+                      const wordColor = ws?.color || typography.emphasisColor;
+
+                      return (
+                        <button
+                          key={tok.wordIndex}
+                          type="button"
+                          onClick={() => toggleWordEmphasis(selectedCue, tok.wordIndex)}
+                          style={
+                            isEmph
+                              ? {
+                                  borderColor: wordColor,
+                                  color: wordColor,
+                                }
+                              : undefined
+                          }
+                          className={`px-2.5 py-1 text-xs font-medium rounded border transition-colors cursor-pointer ${
+                            isEmph
+                              ? `bg-white/8 ${isFocused ? 'ring-1 ring-white/50' : ''}`
+                              : 'bg-[#171A21] border-white/10 text-[#D5D9E2] hover:border-white/25'
+                          }`}
+                        >
+                          {tok.word}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Per-word Color, Size & Style Controls if any word is emphasized */}
+                  {Object.keys(selectedCue.wordStyles).length > 0 && (() => {
+                    const focusedStyle: WordStyleOverride | undefined =
+                      activeWordIdx !== null ? selectedCue.wordStyles[activeWordIdx] : undefined;
+                    const firstKey = Number(Object.keys(selectedCue.wordStyles)[0]);
+                    const refStyle = focusedStyle || selectedCue.wordStyles[firstKey];
+                    const currentScale = refStyle?.scale ?? typography.emphasisScale;
+                    const currentRotate = refStyle?.rotateDeg ?? 0;
+                    const currentOffsetY = refStyle?.offsetY ?? 0;
+                    const currentFont = refStyle?.fontFamily || '';
+                    const currentWeight = refStyle?.fontWeight ?? 0;
+                    const currentUppercase = Boolean(refStyle?.uppercase);
+                    const currentColor = refStyle?.color || typography.emphasisColor;
+                    const currentBgColor = refStyle?.bgColor || currentColor;
+                    const currentStyle = refStyle?.style || typography.emphasisStyle;
+
+                    return (
+                      <div className="p-3 bg-[#161921] border border-white/8 rounded-md space-y-3">
+                        <div className="flex items-center justify-between gap-2 text-[11px]">
+                          <span className="text-[#D5D9E2] font-medium truncate">
+                            {focusedStyle && activeWordIdx !== null
+                              ? `Tùy chỉnh từ #${activeWordIdx + 1}`
+                              : 'Áp dụng cho các từ đang nhấn'}
+                          </span>
+                          {focusedStyle && activeWordIdx !== null && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const next = { ...selectedCue.wordStyles };
+                                delete next[activeWordIdx];
+                                onUpdateCue(selectedCue.id, { wordStyles: next });
+                                setActiveWordIdx(null);
+                              }}
+                              className="text-[11px] text-red-400 hover:text-red-300 cursor-pointer shrink-0"
+                            >
+                              Bỏ nhấn từ này
+                            </button>
+                          )}
+                        </div>
+
+                        {/* Color Swatches */}
+                        <div className="space-y-1.5">
+                          <span className="text-[10px] text-[#8E95A5] block">Màu chữ / Điểm nhấn</span>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            {EMPHASIS_SWATCHES.map((hex) => (
+                              <button
+                                key={hex}
+                                type="button"
+                                aria-label={`Chọn màu ${hex}`}
+                                onClick={() => applyPatchToTargetWords(selectedCue, { color: hex })}
+                                style={{ backgroundColor: hex }}
+                                className={`w-6 h-6 rounded border hover:scale-110 transition-transform cursor-pointer ${
+                                  currentColor.toLowerCase() === hex.toLowerCase()
+                                    ? 'border-white ring-1 ring-white/60'
+                                    : 'border-white/20'
+                                }`}
+                              />
+                            ))}
+                            <input
+                              type="color"
+                              value={currentColor}
+                              onChange={(e) =>
+                                applyPatchToTargetWords(selectedCue, { color: e.target.value })
+                              }
+                              title="Chọn màu tùy chỉnh"
+                              className="w-7 h-6 bg-transparent border-0 cursor-pointer rounded"
+                            />
+                          </div>
+                        </div>
+
+                        {/* Emphasis Style Grid */}
+                        <div className="grid grid-cols-2 gap-1.5">
+                          {EMPHASIS_STYLES.map((st) => (
+                            <button
+                              key={st.id}
+                              type="button"
+                              onClick={() =>
+                                applyPatchToTargetWords(selectedCue, { style: st.id })
+                              }
+                              className={`px-2 py-1.5 text-[11px] rounded border transition-colors cursor-pointer text-left truncate ${
+                                currentStyle === st.id
+                                  ? 'bg-[#FF5A1F]/18 border-[#FF5A1F] text-white'
+                                  : 'bg-[#111318] border-white/8 text-[#9BA3B4] hover:text-white'
+                              }`}
+                            >
+                              {st.label}
+                            </button>
+                          ))}
+                        </div>
+
+                        {/* Font Size Scale Slider (Per-Word) */}
+                        <div className="space-y-1 pt-2 border-t border-white/8">
+                          <div className="flex justify-between text-[11px] text-[#8E95A5]">
+                            <span>Phóng to / Cỡ chữ riêng</span>
+                            <span className="font-mono-tabular text-[#E2E5EC]">
+                              {Math.round(currentScale * 100)}%
+                            </span>
+                          </div>
+                          <input
+                            type="range"
+                            min={0.7}
+                            max={2.2}
+                            step={0.05}
+                            value={currentScale}
+                            onChange={(e) =>
+                              applyPatchToTargetWords(selectedCue, {
+                                scale: Number(e.target.value),
+                              })
+                            }
+                            className="w-full"
+                          />
+                        </div>
+
+                        {/* Custom Font & Weight per Word */}
+                        <div className="grid grid-cols-2 gap-2">
+                          <div className="space-y-1">
+                            <label className="text-[10px] text-[#8E95A5]">Font riêng từ này</label>
+                            <select
+                              value={currentFont}
+                              onChange={(e) =>
+                                applyPatchToTargetWords(selectedCue, {
+                                  fontFamily: e.target.value || null,
+                                })
+                              }
+                              className="w-full bg-[#111318] border border-white/10 rounded px-2 py-1.5 text-[11px] text-[#E2E5EC] focus:outline-none focus:border-[#FF5A1F]"
+                            >
+                              <option value="">Theo câu</option>
+                              {VIDEO_FONTS.map((f) => (
+                                <option key={f.id} value={f.id}>
+                                  {f.label}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          <div className="space-y-1">
+                            <label className="text-[10px] text-[#8E95A5]">Độ đậm từ này</label>
+                            <select
+                              value={currentWeight}
+                              onChange={(e) => {
+                                const v = Number(e.target.value);
+                                applyPatchToTargetWords(selectedCue, {
+                                  fontWeight: v > 0 ? v : null,
+                                });
+                              }}
+                              className="w-full bg-[#111318] border border-white/10 rounded px-2 py-1.5 text-[11px] text-[#E2E5EC] focus:outline-none focus:border-[#FF5A1F]"
+                            >
+                              <option value={0}>Mặc định</option>
+                              <option value={400}>400 Regular</option>
+                              <option value={600}>600 SemiBold</option>
+                              <option value={700}>700 Bold</option>
+                              <option value={800}>800 ExtraBold</option>
+                              <option value={900}>900 Black</option>
+                            </select>
+                          </div>
+                        </div>
+
+                        {/* Tilt Angle & Vertical Nudge */}
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="space-y-1">
+                            <div className="flex justify-between text-[10px] text-[#8E95A5]">
+                              <span>Góc nghiêng</span>
+                              <span className="font-mono-tabular">{currentRotate}°</span>
+                            </div>
+                            <input
+                              type="range"
+                              min={-20}
+                              max={20}
+                              step={1}
+                              value={currentRotate}
+                              onChange={(e) =>
+                                applyPatchToTargetWords(selectedCue, {
+                                  rotateDeg: Number(e.target.value),
+                                })
+                              }
+                              className="w-full"
+                            />
+                          </div>
+
+                          <div className="space-y-1">
+                            <div className="flex justify-between text-[10px] text-[#8E95A5]">
+                              <span>Đẩy cao / thấp</span>
+                              <span className="font-mono-tabular">{currentOffsetY}px</span>
+                            </div>
+                            <input
+                              type="range"
+                              min={-30}
+                              max={30}
+                              step={1}
+                              value={currentOffsetY}
+                              onChange={(e) =>
+                                applyPatchToTargetWords(selectedCue, {
+                                  offsetY: Number(e.target.value),
+                                })
+                              }
+                              className="w-full"
+                            />
+                          </div>
+                        </div>
+
+                        {/* Effect Accent Color & Uppercase Toggle */}
+                        <div className="flex items-center justify-between gap-2 pt-1">
+                          <label className="flex items-center gap-1.5 text-[11px] text-[#D5D9E2] cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={currentUppercase}
+                              onChange={(e) =>
+                                applyPatchToTargetWords(selectedCue, {
+                                  uppercase: e.target.checked,
+                                })
+                              }
+                              className="w-3.5 h-3.5 accent-[#FF5A1F]"
+                            />
+                            <span>IN HOA từ này</span>
+                          </label>
+
+                          <label className="flex items-center gap-1.5 text-[11px] text-[#8E95A5] cursor-pointer">
+                            <span>Màu khung/bóng</span>
+                            <input
+                              type="color"
+                              value={currentBgColor}
+                              onChange={(e) =>
+                                applyPatchToTargetWords(selectedCue, {
+                                  bgColor: e.target.value,
+                                })
+                              }
+                              className="w-6 h-5 bg-transparent border-0 cursor-pointer rounded"
+                            />
+                          </label>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+
+                {/* 3. Per-Cue Position & Style Overrides */}
+                <div className="space-y-3 pt-3 border-t border-white/8">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-semibold text-[#E2E5EC]">
+                      Vị trí &amp; Ghi đè riêng câu này
+                    </label>
+                    {(selectedCue.customPos ||
+                      selectedCue.customAnimation ||
+                      selectedCue.customFont ||
+                      selectedCue.customAlign ||
+                      selectedCue.customScale) && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onUpdateCue(selectedCue.id, {
+                            customPos: null,
+                            customAlign: null,
+                            customAnimation: null,
+                            customFont: null,
+                            customScale: null,
+                          })
+                        }
+                        className="text-[11px] text-[#FF5A1F] hover:underline flex items-center gap-1 cursor-pointer"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        <span>Theo toàn cục</span>
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Quick 9-point anchor for cue */}
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {ANCHOR_POINTS.map((pt) => {
+                      const activeX = selectedCue.customPos?.x ?? typography.posX;
+                      const activeY = selectedCue.customPos?.y ?? typography.posY;
+                      const isClose =
+                        Math.abs(activeX - pt.x) < 0.04 && Math.abs(activeY - pt.y) < 0.04;
+                      return (
+                        <button
+                          key={pt.label}
+                          type="button"
+                          onClick={() =>
+                            onUpdateCue(selectedCue.id, {
+                              customPos: { x: pt.x, y: pt.y },
+                            })
+                          }
+                          className={`py-1.5 text-[11px] rounded border transition-colors cursor-pointer ${
+                            isClose && selectedCue.customPos
+                              ? 'bg-[#FF5A1F]/20 border-[#FF5A1F] text-white'
+                              : 'bg-[#171A21] border-white/8 text-[#9BA3B4] hover:text-white'
+                          }`}
+                        >
+                          {pt.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Fine X/Y sliders */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-[11px] text-[#8E95A5]">
+                        <span>Vị trí X</span>
+                        <span className="font-mono-tabular">
+                          {Math.round((selectedCue.customPos?.x ?? typography.posX) * 100)}%
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0.08}
+                        max={0.92}
+                        step={0.01}
+                        value={selectedCue.customPos?.x ?? typography.posX}
+                        onChange={(e) =>
+                          onUpdateCue(selectedCue.id, {
+                            customPos: {
+                              x: Number(e.target.value),
+                              y: selectedCue.customPos?.y ?? typography.posY,
+                            },
+                          })
+                        }
+                        className="w-full"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-[11px] text-[#8E95A5]">
+                        <span>Vị trí Y</span>
+                        <span className="font-mono-tabular">
+                          {Math.round((selectedCue.customPos?.y ?? typography.posY) * 100)}%
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0.08}
+                        max={0.92}
+                        step={0.01}
+                        value={selectedCue.customPos?.y ?? typography.posY}
+                        onChange={(e) =>
+                          onUpdateCue(selectedCue.id, {
+                            customPos: {
+                              x: selectedCue.customPos?.x ?? typography.posX,
+                              y: Number(e.target.value),
+                            },
+                          })
+                        }
+                        className="w-full"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Per-cue Effect & Font Override */}
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <label className="text-[11px] text-[#8E95A5]">Hiệu ứng câu này</label>
+                      <select
+                        value={selectedCue.customAnimation || ''}
+                        onChange={(e) =>
+                          onUpdateCue(selectedCue.id, {
+                            customAnimation: (e.target.value || null) as AnimationPresetId | null,
+                          })
+                        }
+                        className="w-full bg-[#171A21] border border-white/10 rounded px-2 py-1.5 text-xs text-[#E2E5EC] focus:outline-none focus:border-[#FF5A1F]"
+                      >
+                        <option value="">Theo mặc định</option>
+                        {ANIMATION_PRESETS.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[11px] text-[#8E95A5]">Font câu này</label>
+                      <select
+                        value={selectedCue.customFont || ''}
+                        onChange={(e) =>
+                          onUpdateCue(selectedCue.id, {
+                            customFont: e.target.value || null,
+                          })
+                        }
+                        className="w-full bg-[#171A21] border border-white/10 rounded px-2 py-1.5 text-xs text-[#E2E5EC] focus:outline-none focus:border-[#FF5A1F]"
+                      >
+                        <option value="">Theo mặc định</option>
+                        {VIDEO_FONTS.map((f) => (
+                          <option key={f.id} value={f.id}>
+                            {f.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
+          </>
+        )}
+
+        {activeTab === 'typography' && (
+          <>
+            {/* 1. Kinetic Animation Presets */}
+            <div className="space-y-2.5">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-semibold text-[#E2E5EC]">
+                  Hiệu ứng chuyển động chữ
+                </label>
+                <span className="text-[11px] text-[#8E95A5]">{ANIMATION_PRESETS.length} kiểu</span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-1.5">
+                {ANIMATION_PRESETS.map((preset) => {
+                  const active = motion.preset === preset.id;
+                  return (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      onClick={() => onUpdateMotion({ preset: preset.id })}
+                      className={`p-2 rounded-md border text-left transition-colors cursor-pointer ${
+                        active
+                          ? 'bg-[#FF5A1F]/16 border-[#FF5A1F] text-white'
+                          : 'bg-[#171A21] border-white/8 text-[#D5D9E2] hover:bg-[#1D212B]'
+                      }`}
+                    >
+                      <div className="text-xs font-semibold truncate">{preset.name}</div>
+                      <div className="text-[10px] text-[#8E95A5] truncate">{preset.desc}</div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 pt-2">
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[11px] text-[#8E95A5]">
+                    <span>Tốc độ vào</span>
+                    <span className="font-mono-tabular">{motion.inSpeed.toFixed(2)}x</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0.4}
+                    max={2.4}
+                    step={0.05}
+                    value={motion.inSpeed}
+                    onChange={(e) => onUpdateMotion({ inSpeed: Number(e.target.value) })}
+                    className="w-full"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[11px] text-[#8E95A5]">
+                    <span>Độ trễ từng từ</span>
+                    <span className="font-mono-tabular">
+                      {Math.round(motion.staggerAmount * 100)}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={motion.staggerAmount}
+                    onChange={(e) => onUpdateMotion({ staggerAmount: Number(e.target.value) })}
+                    className="w-full"
+                  />
+                </div>
+              </div>
+
+              <label className="flex items-center justify-between pt-1 cursor-pointer">
+                <span className="text-xs text-[#D5D9E2]">Nhún nhẹ theo nhịp Audio</span>
+                <input
+                  type="checkbox"
+                  checked={motion.audioReactiveBounce}
+                  onChange={(e) => onUpdateMotion({ audioReactiveBounce: e.target.checked })}
+                  className="w-4 h-4 accent-[#FF5A1F]"
+                />
+              </label>
+            </div>
+
+            {/* 2. Font & Styling */}
+            <div className="space-y-3 pt-4 border-t border-white/8">
+              <label className="text-xs font-semibold text-[#E2E5EC] block">
+                Kiểu chữ &amp; Bố cục toàn cục
+              </label>
+
+              <div className="space-y-1">
+                <label className="text-[11px] text-[#8E95A5]">Font chữ (Hỗ trợ Tiếng Việt)</label>
+                <select
+                  value={typography.fontFamily}
+                  onChange={(e) => onUpdateTypography({ fontFamily: e.target.value })}
+                  style={{ fontFamily: typography.fontFamily }}
+                  className="w-full bg-[#171A21] border border-white/10 rounded-md px-3 py-2 text-sm text-[#F4F5F7] focus:outline-none focus:border-[#FF5A1F]"
+                >
+                  {VIDEO_FONTS.map((f) => (
+                    <option key={f.id} value={f.id} style={{ fontFamily: f.id }}>
+                      {f.label} — {f.category}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[11px] text-[#8E95A5]">
+                    <span>Cỡ chữ</span>
+                    <span className="font-mono-tabular">{typography.fontSize}px</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={32}
+                    max={150}
+                    step={2}
+                    value={typography.fontSize}
+                    onChange={(e) => onUpdateTypography({ fontSize: Number(e.target.value) })}
+                    className="w-full"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[11px] text-[#8E95A5]">
+                    <span>Độ đậm</span>
+                    <span className="font-mono-tabular">{typography.fontWeight}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={400}
+                    max={900}
+                    step={100}
+                    value={typography.fontWeight}
+                    onChange={(e) => onUpdateTypography({ fontWeight: Number(e.target.value) })}
+                    className="w-full"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[11px] text-[#8E95A5]">
+                    <span>Giãn dòng</span>
+                    <span className="font-mono-tabular">{typography.lineHeight.toFixed(2)}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0.95}
+                    max={1.8}
+                    step={0.05}
+                    value={typography.lineHeight}
+                    onChange={(e) => onUpdateTypography({ lineHeight: Number(e.target.value) })}
+                    className="w-full"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[11px] text-[#8E95A5]">
+                    <span>Giãn chữ</span>
+                    <span className="font-mono-tabular">{typography.letterSpacing}px</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={-6}
+                    max={18}
+                    step={0.5}
+                    value={typography.letterSpacing}
+                    onChange={(e) => onUpdateTypography({ letterSpacing: Number(e.target.value) })}
+                    className="w-full"
+                  />
+                </div>
+              </div>
+
+              {/* Alignment & Case */}
+              <div className="grid grid-cols-2 gap-2">
+                <div className="flex bg-[#171A21] border border-white/8 rounded-md p-0.5">
+                  {(['left', 'center', 'right'] as TextAlignMode[]).map((align) => (
+                    <button
+                      key={align}
+                      type="button"
+                      onClick={() => onUpdateTypography({ textAlign: align })}
+                      className={`flex-1 py-1.5 flex items-center justify-center rounded transition-colors cursor-pointer ${
+                        typography.textAlign === align
+                          ? 'bg-[#262B38] text-white'
+                          : 'text-[#8E95A5] hover:text-white'
+                      }`}
+                    >
+                      {align === 'left' && <AlignLeft className="w-3.5 h-3.5" />}
+                      {align === 'center' && <AlignCenter className="w-3.5 h-3.5" />}
+                      {align === 'right' && <AlignRight className="w-3.5 h-3.5" />}
+                    </button>
+                  ))}
+                </div>
+
+                <select
+                  value={typography.textTransform}
+                  onChange={(e) =>
+                    onUpdateTypography({ textTransform: e.target.value as TextTransformMode })
+                  }
+                  className="bg-[#171A21] border border-white/8 rounded-md px-2 text-xs text-[#E2E5EC] focus:outline-none"
+                >
+                  <option value="none">Chữ nguyên bản</option>
+                  <option value="uppercase">IN HOA TOÀN BỘ</option>
+                  <option value="titlecase">Viết Hoa Đầu Từ</option>
+                </select>
+              </div>
+
+              {/* Global Position 9-point */}
+              <div className="space-y-2 pt-1">
+                <div className="flex justify-between text-[11px] text-[#8E95A5]">
+                  <span>Vị trí khối chữ mặc định</span>
+                  <span className="font-mono-tabular">
+                    {Math.round(typography.posX * 100)}%, {Math.round(typography.posY * 100)}%
+                  </span>
+                </div>
+                <div className="grid grid-cols-3 gap-1">
+                  {ANCHOR_POINTS.map((pt) => {
+                    const active =
+                      Math.abs(typography.posX - pt.x) < 0.04 &&
+                      Math.abs(typography.posY - pt.y) < 0.04;
+                    return (
+                      <button
+                        key={pt.label}
+                        type="button"
+                        onClick={() => onUpdateTypography({ posX: pt.x, posY: pt.y })}
+                        className={`py-1 text-[11px] rounded border transition-colors cursor-pointer ${
+                          active
+                            ? 'bg-[#FF5A1F]/20 border-[#FF5A1F] text-white'
+                            : 'bg-[#171A21] border-white/8 text-[#9BA3B4] hover:text-white'
+                        }`}
+                      >
+                        {pt.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Colors, Stroke & Shadow */}
+              <div className="grid grid-cols-2 gap-3 pt-2">
+                <label className="flex items-center justify-between bg-[#171A21] border border-white/8 rounded px-2.5 py-1.5 cursor-pointer">
+                  <span className="text-xs text-[#D5D9E2]">Màu chữ chính</span>
+                  <input
+                    type="color"
+                    value={typography.baseColor}
+                    onChange={(e) => onUpdateTypography({ baseColor: e.target.value })}
+                    className="w-6 h-5 bg-transparent border-0 cursor-pointer"
+                  />
+                </label>
+                <label className="flex items-center justify-between bg-[#171A21] border border-white/8 rounded px-2.5 py-1.5 cursor-pointer">
+                  <span className="text-xs text-[#D5D9E2]">Màu nhấn mặc định</span>
+                  <input
+                    type="color"
+                    value={typography.emphasisColor}
+                    onChange={(e) => onUpdateTypography({ emphasisColor: e.target.value })}
+                    className="w-6 h-5 bg-transparent border-0 cursor-pointer"
+                  />
+                </label>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[11px] text-[#8E95A5]">
+                    <span>Viền chữ (Stroke)</span>
+                    <span className="font-mono-tabular">{typography.strokeWidth}px</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={10}
+                    step={0.5}
+                    value={typography.strokeWidth}
+                    onChange={(e) => onUpdateTypography({ strokeWidth: Number(e.target.value) })}
+                    className="w-full"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[11px] text-[#8E95A5]">
+                    <span>Độ mờ bóng</span>
+                    <span className="font-mono-tabular">{typography.shadowBlur}px</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={40}
+                    step={1}
+                    value={typography.shadowBlur}
+                    onChange={(e) => onUpdateTypography({ shadowBlur: Number(e.target.value) })}
+                    className="w-full"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <div className="flex justify-between text-[11px] text-[#8E95A5]">
+                  <span>Chiều rộng tối đa dòng chữ</span>
+                  <span className="font-mono-tabular">{typography.maxWidthPercent}%</span>
+                </div>
+                <input
+                  type="range"
+                  min={45}
+                  max={94}
+                  step={1}
+                  value={typography.maxWidthPercent}
+                  onChange={(e) =>
+                    onUpdateTypography({ maxWidthPercent: Number(e.target.value) })
+                  }
+                  className="w-full"
+                />
+              </div>
+            </div>
+
+            {/* 3. Extra Text & Camera Effects */}
+            {effects && onUpdateEffects && (
+              <div className="space-y-3 pt-4 border-t border-white/8">
+                <label className="text-xs font-semibold text-[#E2E5EC] block">
+                  Hiệu ứng chữ &amp; Camera phụ trợ
+                </label>
+
+                <label className="flex items-center justify-between cursor-pointer">
+                  <span className="text-xs text-[#D5D9E2]">
+                    Camera trôi nhẹ điện ảnh (Float)
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={effects.cameraFloat}
+                    onChange={(e) => onUpdateEffects({ cameraFloat: e.target.checked })}
+                    className="w-4 h-4 accent-[#FF5A1F]"
+                  />
+                </label>
+
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[11px] text-[#8E95A5]">
+                    <span>Tách kênh RGB (Chromatic Aberration)</span>
+                    <span className="font-mono-tabular">
+                      {Math.round(effects.chromaticAberration * 100)}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={effects.chromaticAberration}
+                    onChange={(e) =>
+                      onUpdateEffects({ chromaticAberration: Number(e.target.value) })
+                    }
+                    className="w-full"
+                  />
+                </div>
+
+                <div className="grid grid-cols-[1fr_auto] gap-2 items-end">
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-[11px] text-[#8E95A5]">
+                      <span>Khung nền sau chữ (Backdrop Card)</span>
+                      <span className="font-mono-tabular">
+                        {Math.round(effects.textCardOpacity * 100)}%
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={0.85}
+                      step={0.05}
+                      value={effects.textCardOpacity}
+                      onChange={(e) =>
+                        onUpdateEffects({ textCardOpacity: Number(e.target.value) })
+                      }
+                      className="w-full"
+                    />
+                  </div>
+                  <input
+                    type="color"
+                    value={effects.textCardColor}
+                    onChange={(e) => onUpdateEffects({ textCardColor: e.target.value })}
+                    title="Màu khung nền chữ"
+                    className="w-8 h-7 bg-[#171A21] border border-white/10 rounded cursor-pointer"
+                  />
+                </div>
+              </div>
+            )}
+          </>
+        )}
+
+        {activeTab === 'background' && (
+          <>
+            {/* Mode Switch */}
+            <div className="space-y-2.5">
+              <label className="text-xs font-semibold text-[#E2E5EC] block">Chế độ nền</label>
+              <div className="grid grid-cols-2 gap-1.5">
+                {[
+                  { id: 'preset', label: 'Nền động có sẵn' },
+                  { id: 'video', label: 'Video tải lên' },
+                  { id: 'transparent', label: 'Trong suốt (Alpha)' },
+                  { id: 'solid', label: 'Màu đơn sắc' },
+                ].map((m) => (
+                  <button
+                    key={m.id}
+                    type="button"
+                    onClick={() =>
+                      onUpdateBackground({ mode: m.id as BackgroundConfig['mode'] })
+                    }
+                    className={`px-3 py-2 text-xs font-medium rounded-md border transition-colors cursor-pointer whitespace-nowrap ${
+                      background.mode === m.id
+                        ? 'bg-[#FF5A1F]/18 border-[#FF5A1F] text-white'
+                        : 'bg-[#171A21] border-white/8 text-[#9BA3B4] hover:text-white'
+                    }`}
+                  >
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {background.mode === 'transparent' && (
+              <div className="p-3.5 bg-[#161922] border border-[#34D399]/30 rounded-md space-y-1.5">
+                <div className="text-xs font-semibold text-[#34D399]">
+                  Nền trong suốt Alpha đã bật
+                </div>
+                <p className="text-xs text-[#A1A8B8] leading-relaxed">
+                  Phù hợp để xuất file <strong>MOV Apple ProRes 4444</strong> kèm Alpha Channel đưa
+                  vào Premiere, After Effects, DaVinci Resolve hoặc CapCut hậu kỳ.
+                </p>
+              </div>
+            )}
+
+            {background.mode === 'solid' && (
+              <div className="space-y-2.5 pt-2 border-t border-white/8">
+                <label className="flex items-center justify-between bg-[#171A21] border border-white/8 rounded-md px-3 py-2 cursor-pointer">
+                  <span className="text-xs text-[#E2E5EC]">Chọn màu nền</span>
+                  <input
+                    type="color"
+                    value={background.solidColor}
+                    onChange={(e) => onUpdateBackground({ solidColor: e.target.value })}
+                    className="w-8 h-6 bg-transparent border-0 cursor-pointer"
+                  />
+                </label>
+              </div>
+            )}
+
+            {background.mode === 'preset' && (
+              <div className="space-y-4 pt-2 border-t border-white/8">
+                <div className="space-y-2">
+                  <label className="text-xs font-semibold text-[#E2E5EC] flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-[#FF5A1F]" />
+                    <span>{DYNAMIC_BG_PRESETS.length} Hiệu ứng nền động</span>
+                  </label>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {DYNAMIC_BG_PRESETS.map((p) => {
+                      const active = background.presetId === p.id;
+                      return (
+                        <button
+                          key={p.id}
+                          type="button"
+                          onClick={() =>
+                            onUpdateBackground({
+                              presetId: p.id,
+                              primaryColor: p.defaults.primary,
+                              secondaryColor: p.defaults.secondary,
+                              accentColor: p.defaults.accent,
+                            })
+                          }
+                          className={`p-2 rounded-md border flex flex-col justify-between gap-1.5 transition-colors cursor-pointer text-left ${
+                            active
+                              ? 'bg-[#FF5A1F]/16 border-[#FF5A1F]'
+                              : 'bg-[#171A21] border-white/8 hover:bg-[#1D212B]'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-1 w-full">
+                            <div className="text-[11px] font-semibold text-[#F4F5F7] truncate">
+                              {p.name}
+                            </div>
+                            <div className="flex items-center gap-0.5 shrink-0">
+                              <span
+                                style={{ backgroundColor: p.defaults.primary }}
+                                className="w-2.5 h-2.5 rounded-xs border border-white/20"
+                              />
+                              <span
+                                style={{ backgroundColor: p.defaults.accent }}
+                                className="w-2.5 h-2.5 rounded-xs border border-white/20"
+                              />
+                            </div>
+                          </div>
+                          <div className="text-[10px] text-[#8E95A5] truncate w-full">
+                            {p.desc}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Custom Background Palette */}
+                <div className="grid grid-cols-3 gap-2">
+                  <label className="bg-[#171A21] border border-white/8 rounded p-2 flex flex-col items-center gap-1 cursor-pointer">
+                    <input
+                      type="color"
+                      value={background.primaryColor}
+                      onChange={(e) => onUpdateBackground({ primaryColor: e.target.value })}
+                      className="w-full h-6 bg-transparent border-0 cursor-pointer"
+                    />
+                    <span className="text-[10px] text-[#9BA3B4]">Chính</span>
+                  </label>
+                  <label className="bg-[#171A21] border border-white/8 rounded p-2 flex flex-col items-center gap-1 cursor-pointer">
+                    <input
+                      type="color"
+                      value={background.secondaryColor}
+                      onChange={(e) => onUpdateBackground({ secondaryColor: e.target.value })}
+                      className="w-full h-6 bg-transparent border-0 cursor-pointer"
+                    />
+                    <span className="text-[10px] text-[#9BA3B4]">Phụ</span>
+                  </label>
+                  <label className="bg-[#171A21] border border-white/8 rounded p-2 flex flex-col items-center gap-1 cursor-pointer">
+                    <input
+                      type="color"
+                      value={background.accentColor}
+                      onChange={(e) => onUpdateBackground({ accentColor: e.target.value })}
+                      className="w-full h-6 bg-transparent border-0 cursor-pointer"
+                    />
+                    <span className="text-[10px] text-[#9BA3B4]">Điểm nhấn</span>
+                  </label>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-[11px] text-[#8E95A5]">
+                      <span>Tốc độ nền</span>
+                      <span className="font-mono-tabular">{background.speed.toFixed(1)}x</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0.2}
+                      max={2.5}
+                      step={0.1}
+                      value={background.speed}
+                      onChange={(e) => onUpdateBackground({ speed: Number(e.target.value) })}
+                      className="w-full"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-[11px] text-[#8E95A5]">
+                      <span>Cường độ</span>
+                      <span className="font-mono-tabular">
+                        {Math.round(background.intensity * 100)}%
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0.2}
+                      max={1.5}
+                      step={0.05}
+                      value={background.intensity}
+                      onChange={(e) => onUpdateBackground({ intensity: Number(e.target.value) })}
+                      className="w-full"
+                    />
+                  </div>
+                </div>
+
+                <label className="flex items-center justify-between cursor-pointer">
+                  <span className="text-xs text-[#D5D9E2]">Phản ứng theo nhịp Audio</span>
+                  <input
+                    type="checkbox"
+                    checked={background.audioReactive}
+                    onChange={(e) => onUpdateBackground({ audioReactive: e.target.checked })}
+                    className="w-4 h-4 accent-[#FF5A1F]"
+                  />
+                </label>
+              </div>
+            )}
+
+            {background.mode === 'video' && (
+              <div className="space-y-4 pt-2 border-t border-white/8">
+                <label className="flex flex-col items-center justify-center gap-2 p-5 bg-[#171A21] hover:bg-[#1D212B] border border-dashed border-white/20 rounded-md cursor-pointer transition-colors">
+                  <Film className="w-6 h-6 text-[#FF5A1F]" />
+                  <div className="text-xs font-medium text-[#E2E5EC] text-center">
+                    {bgVideoName ? `Đã chọn: ${bgVideoName}` : 'Nhấn để tải lên Video nền'}
+                  </div>
+                  <div className="text-[11px] text-[#8E95A5] flex items-center gap-1">
+                    <Upload className="w-3 h-3" />
+                    <span>Hỗ trợ MP4, MOV, WebM</span>
+                  </div>
+                  <input
+                    type="file"
+                    accept="video/*,.mp4,.mov,.webm"
+                    className="hidden"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) onUploadBgVideo(file);
+                      e.target.value = '';
+                    }}
+                  />
+                </label>
+
+                {bgVideoName && (
+                  <div className="space-y-2">
+                    {bgVideoDurationSec > 0 && (
+                      <div className="px-3 py-2 bg-[#161922] border border-white/8 rounded-md flex items-center justify-between text-[11px] font-mono-tabular text-[#A1A8B8]">
+                        <span>Clip gốc: {bgVideoDurationSec.toFixed(1)}s</span>
+                        <span aria-hidden="true">→</span>
+                        <span className="text-[#34D399]">
+                          Kéo dài {totalDurationSec.toFixed(1)}s
+                        </span>
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      onClick={onClearBgVideo}
+                      className="w-full py-1.5 text-xs text-red-400 hover:bg-red-500/10 border border-red-400/20 rounded-md transition-colors cursor-pointer"
+                    >
+                      Gỡ video nền
+                    </button>
+                  </div>
+                )}
+
+                {/* Seamless Loop & Hidden Transition Controls */}
+                <div className="space-y-3 pt-2 border-t border-white/8">
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-[#E2E5EC] block">
+                      Nối vòng lặp ẩn chuyển tiếp (kéo dài vừa Audio)
+                    </label>
+                    <div className="grid grid-cols-3 gap-1.5">
+                      {[
+                        { id: 'crossfade', label: 'Hòa trộn mờ' },
+                        { id: 'pingpong', label: 'Xuôi - Ngược' },
+                        { id: 'cut', label: 'Nối thẳng' },
+                      ].map((opt) => (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() =>
+                            onUpdateBackground({
+                              videoLoop: true,
+                              videoLoopMode: opt.id as BackgroundConfig['videoLoopMode'],
+                            })
+                          }
+                          className={`py-2 px-1.5 text-[11px] font-medium rounded-md border transition-colors cursor-pointer whitespace-nowrap ${
+                            background.videoLoopMode === opt.id
+                              ? 'bg-[#FF5A1F]/18 border-[#FF5A1F] text-white'
+                              : 'bg-[#171A21] border-white/8 text-[#9BA3B4] hover:text-white'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                    <p className="text-[11px] text-[#8E95A5] leading-relaxed">
+                      {background.videoLoopMode === 'crossfade' &&
+                        'Làm mờ giao thoa giữa đoạn cuối và đoạn đầu để giấu vết cắt khi lặp lại.'}
+                      {background.videoLoopMode === 'pingpong' &&
+                        'Phát xuôi rồi đảo ngược liên tục (Boomerang) giúp điểm nối liền mạch 100%.'}
+                      {background.videoLoopMode === 'cut' &&
+                        'Lặp trực tiếp từ đầu khi hết clip.'}
+                    </p>
+                  </div>
+
+                  {background.videoLoopMode === 'crossfade' && (
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-[11px] text-[#8E95A5]">
+                        <span>Thời lượng chuyển tiếp ẩn vết nối</span>
+                        <span className="font-mono-tabular">
+                          {background.videoCrossfadeSec.toFixed(1)}s
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0.3}
+                        max={2.5}
+                        step={0.1}
+                        value={background.videoCrossfadeSec}
+                        onChange={(e) =>
+                          onUpdateBackground({ videoCrossfadeSec: Number(e.target.value) })
+                        }
+                        className="w-full"
+                      />
+                    </div>
+                  )}
+
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-[11px] text-[#8E95A5]">
+                      <span>Tốc độ phát video nền</span>
+                      <span className="font-mono-tabular">
+                        {background.videoPlaybackRate.toFixed(2)}x
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0.5}
+                      max={1.5}
+                      step={0.05}
+                      value={background.videoPlaybackRate}
+                      onChange={(e) =>
+                        onUpdateBackground({ videoPlaybackRate: Number(e.target.value) })
+                      }
+                      className="w-full"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-3 pt-2 border-t border-white/8">
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-[11px] text-[#8E95A5]">
+                      <span>Làm tối nền (Scrim tương phản chữ)</span>
+                      <span className="font-mono-tabular">
+                        {Math.round(background.videoDimmer * 100)}%
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={0.9}
+                      step={0.05}
+                      value={background.videoDimmer}
+                      onChange={(e) =>
+                        onUpdateBackground({ videoDimmer: Number(e.target.value) })
+                      }
+                      className="w-full"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-[11px] text-[#8E95A5]">
+                      <span>Làm mờ hậu cảnh (Blur)</span>
+                      <span className="font-mono-tabular">{background.videoBlur}px</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={25}
+                      step={1}
+                      value={background.videoBlur}
+                      onChange={(e) => onUpdateBackground({ videoBlur: Number(e.target.value) })}
+                      className="w-full"
+                    />
+                  </div>
+                </div>
+
+                {/* Background Audio Mixer & Replacement Audio */}
+                <div className="space-y-3 pt-3 border-t border-white/8">
+                  <label className="text-xs font-semibold text-[#E2E5EC] block">
+                    Âm thanh nền &amp; Cân bằng Voice
+                  </label>
+
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => onUpdateBackground({ bgAudioSource: 'video' })}
+                      className={`py-2 px-2 text-[11px] font-medium rounded-md border transition-colors cursor-pointer truncate ${
+                        background.bgAudioSource === 'video'
+                          ? 'bg-[#FF5A1F]/18 border-[#FF5A1F] text-white'
+                          : 'bg-[#171A21] border-white/8 text-[#9BA3B4] hover:text-white'
+                      }`}
+                    >
+                      Âm thanh gốc Video
+                    </button>
+
+                    <label
+                      className={`py-2 px-2 text-[11px] font-medium rounded-md border transition-colors cursor-pointer flex items-center justify-center gap-1 truncate ${
+                        background.bgAudioSource === 'custom' && bgAudioName
+                          ? 'bg-[#38BDF8]/18 border-[#38BDF8] text-white'
+                          : 'bg-[#171A21] border-white/8 text-[#9BA3B4] hover:text-white'
+                      }`}
+                    >
+                      <Upload className="w-3 h-3 shrink-0" />
+                      <span className="truncate">
+                        {bgAudioName ? 'Đổi file khác' : 'Thay âm thanh'}
+                      </span>
+                      <input
+                        type="file"
+                        accept="audio/*,.mp3,.wav,.m4a,.aac,.ogg,.flac"
+                        className="hidden"
+                        onChange={(e) => {
+                          const f = e.target.files?.[0];
+                          if (f && onUploadBgAudio) onUploadBgAudio(f);
+                          e.target.value = '';
+                        }}
+                      />
+                    </label>
+                  </div>
+
+                  {bgAudioName && (
+                    <div className="px-2.5 py-1.5 bg-[#161922] border border-[#38BDF8]/30 rounded-md flex items-center justify-between gap-2 text-[11px]">
+                      <span className="text-[#E2E5EC] truncate">Đang thay bằng: {bgAudioName}</span>
+                      {onClearBgAudio && (
+                        <button
+                          type="button"
+                          onClick={onClearBgAudio}
+                          title="Dùng lại âm thanh gốc từ video"
+                          className="p-0.5 text-[#8E95A5] hover:text-red-400 cursor-pointer shrink-0"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Background Audio Volume */}
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between text-[11px] text-[#8E95A5]">
+                      <span className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onUpdateBackground({
+                              bgAudioVolume: background.bgAudioVolume > 0 ? 0 : 0.25,
+                            })
+                          }
+                          title={background.bgAudioVolume > 0 ? 'Tắt tiếng nền' : 'Bật tiếng nền'}
+                          className="text-[#9BA3B4] hover:text-white cursor-pointer"
+                        >
+                          {background.bgAudioVolume <= 0.005 ? (
+                            <VolumeX className="w-3.5 h-3.5 text-red-400" />
+                          ) : (
+                            <Volume2 className="w-3.5 h-3.5 text-[#38BDF8]" />
+                          )}
+                        </button>
+                        <span>Âm lượng nền</span>
+                      </span>
+                      <span className="font-mono-tabular">
+                        {Math.round(background.bgAudioVolume * 100)}%
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.02}
+                      value={background.bgAudioVolume}
+                      onChange={(e) =>
+                        onUpdateBackground({ bgAudioVolume: Number(e.target.value) })
+                      }
+                      className="w-full"
+                    />
+                  </div>
+
+                  {/* Main Voice Volume */}
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between text-[11px] text-[#8E95A5]">
+                      <span>Âm lượng Voice / Audio chính</span>
+                      <span className="font-mono-tabular">
+                        {Math.round(background.voiceVolume * 100)}%
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.02}
+                      value={background.voiceVolume}
+                      onChange={(e) =>
+                        onUpdateBackground({ voiceVolume: Number(e.target.value) })
+                      }
+                      className="w-full"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Global Post-FX Overlay Filters (Vignette, Grain, Scanlines) */}
+            {background.mode !== 'transparent' && effects && onUpdateEffects && (
+              <div className="space-y-3 pt-3 border-t border-white/8">
+                <label className="text-xs font-semibold text-[#E2E5EC] block">
+                  Hiệu ứng hậu kỳ &amp; Bộ lọc khung hình
+                </label>
+
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[11px] text-[#8E95A5]">
+                    <span>Tối viền điện ảnh (Vignette)</span>
+                    <span className="font-mono-tabular">
+                      {Math.round(effects.vignette * 100)}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={0.85}
+                    step={0.05}
+                    value={effects.vignette}
+                    onChange={(e) => onUpdateEffects({ vignette: Number(e.target.value) })}
+                    className="w-full"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-[11px] text-[#8E95A5]">
+                      <span>Hạt phim (Grain)</span>
+                      <span className="font-mono-tabular">
+                        {Math.round(effects.filmGrain * 100)}%
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={0.5}
+                      step={0.02}
+                      value={effects.filmGrain}
+                      onChange={(e) => onUpdateEffects({ filmGrain: Number(e.target.value) })}
+                      className="w-full"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-[11px] text-[#8E95A5]">
+                      <span>Scanlines Retro</span>
+                      <span className="font-mono-tabular">
+                        {Math.round(effects.scanlines * 100)}%
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={0.6}
+                      step={0.04}
+                      value={effects.scanlines}
+                      onChange={(e) => onUpdateEffects({ scanlines: Number(e.target.value) })}
+                      className="w-full"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </aside>
+  );
+};

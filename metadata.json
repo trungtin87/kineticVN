@@ -1,0 +1,6 @@
+{
+  "name": "Kinetik Studio",
+  "description": "Kinetic typography video studio for SRT subtitles and audio with customizable line breaks, word emphasis colors, fonts, dynamic backgrounds, MP4 and MOV ProRes 4444 alpha channel export.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

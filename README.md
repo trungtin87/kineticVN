@@ -1,11 +1,20 @@
-<div align="center">
+# Kinetik Studio — Kinetic Typography Video Editor
 
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+Ứng dụng tạo video Kinetic Typography từ phụ đề `.srt` và file Audio, hỗ trợ xem trước thời gian thực trên Canvas 2D và kết xuất video bằng FFmpeg (**MP4 H.264** và **MOV Apple ProRes 4444 kèm Alpha Channel 16-bit**).
 
-  <h1>Built with AI Studio</h2>
+## Yêu cầu hệ thống
+- **Node.js** `>= 20`
+- **FFmpeg** & **FFprobe** đã cài sẵn trong `PATH` (dùng để ghép frame RGBA, lặp mượt video nền và trộn âm thanh)
 
-  <p>The fastest path from prompt to production with Gemini.</p>
+## Cài đặt & Chạy phát triển
+```bash
+npm install
+npm run dev
+```
+Mở trình duyệt tại: `http://localhost:3000`
 
-  <a href="https://aistudio.google.com/apps">Start building</a>
-
-</div>
+## Build & Chạy Production
+```bash
+npm run build
+npm start
+```
