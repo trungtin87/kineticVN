@@ -109,15 +109,17 @@ export const TopBar: React.FC<TopBarProps> = ({
 
         <PWAInstallButton />
 
-        <a
-          href="/api/export-source"
-          download="kinetik-studio-source.zip"
-          title="Tải toàn bộ mã nguồn (.zip)"
-          aria-label="Tải toàn bộ mã nguồn"
-          className="flex p-2 text-[#8E95A5] hover:text-[#F4F5F7] hover:bg-white/5 rounded-md transition-colors cursor-pointer shrink-0"
-        >
-          <FileCode2 className="w-4 h-4" />
-        </a>
+        {import.meta.env.VITE_STATIC_HOST !== 'true' && (
+          <a
+            href="/api/export-source"
+            download="kinetik-studio-source.zip"
+            title="Tải toàn bộ mã nguồn (.zip)"
+            aria-label="Tải toàn bộ mã nguồn"
+            className="flex p-2 text-[#8E95A5] hover:text-[#F4F5F7] hover:bg-white/5 rounded-md transition-colors cursor-pointer shrink-0"
+          >
+            <FileCode2 className="w-4 h-4" />
+          </a>
+        )}
 
         <button
           type="button"

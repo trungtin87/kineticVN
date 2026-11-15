@@ -7,6 +7,7 @@ import {
   StudioProject,
 } from '../types/studio';
 import { renderKineticScene } from '../engine/kineticRenderer';
+import { exportWithBrowserWasm } from '../engine/clientWasmExport';
 import { sampleAudioEnergy } from '../utils/audioEnvelope';
 
 interface ExportModalProps {
@@ -119,6 +120,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   const [cachedBlobUrl, setCachedBlobUrl] = useState<string | null>(null);
   const [isDownloadingFile, setIsDownloadingFile] = useState(false);
   const [downloadPct, setDownloadPct] = useState(0);
+  const [codecNote, setCodecNote] = useState<string | null>(null);
 
   useEffect(() => {
     return () => {
@@ -257,6 +259,19 @@ export const ExportModal: React.FC<ExportModalProps> = ({
     }
   };
 
+  const checkServerAvailable = async (): Promise<boolean> => {
+    if (import.meta.env.VITE_STATIC_HOST === 'true') return false;
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 1500);
+      const res = await fetch('/api/health', { cache: 'no-store', signal: ctrl.signal });
+      clearTimeout(timer);
+      return res.ok;
+    } catch {
+      return false;
+    }
+  };
+
   const startExport = async () => {
     try {
       if (cachedBlobUrl) {
@@ -266,10 +281,47 @@ export const ExportModal: React.FC<ExportModalProps> = ({
       setPhase('rendering');
       setProgress(0);
       setErrorMsg(null);
+      setCodecNote(null);
       setDownloadInfo(null);
       setStatusLabel('Đang khởi tạo tiến trình render...');
 
       await document.fonts.ready;
+
+      const serverReady = await checkServerAvailable();
+      if (!serverReady) {
+        const result = await exportWithBrowserWasm({
+          project,
+          format,
+          width,
+          height,
+          fps,
+          totalFrames,
+          renderDuration,
+          includeBackground,
+          audioFile,
+          bgVideoFile,
+          bgAudioFile,
+          audioEnvelope,
+          onPhaseChange: (p) => setPhase(p),
+          onProgress: (pct) => setProgress(pct),
+          onStatus: (label) => setStatusLabel(label),
+        });
+
+        const blobUrl = URL.createObjectURL(result.blob);
+        setCachedBlobUrl(blobUrl);
+        setCodecNote(result.usedFallbackCodecNote ?? null);
+        setPhase('done');
+        setProgress(100);
+        setStatusLabel('Xuất video hoàn tất (trình duyệt)!');
+        setDownloadInfo({
+          jobId: 'local-wasm',
+          url: blobUrl,
+          filename: result.filename,
+          fileSize: result.blob.size,
+          mime: result.blob.type,
+        });
+        return;
+      }
 
       const useServerVideoComposite =
         includeBackground && project.background.mode === 'video' && Boolean(bgVideoFile);
@@ -653,6 +705,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
               </div>
 
               {errorMsg && <p className="text-xs text-red-400">{errorMsg}</p>}
+              {codecNote && <p className="text-[11px] text-amber-300/90">{codecNote}</p>}
 
               {downloadInfo && (
                 <div className="mt-2 space-y-1.5">
@@ -687,19 +740,20 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                       xuống máy ngay ở trên.
                     </p>
                   )}
-                  {downloadInfo.fileSize <= 28 * 1024 * 1024 && (
-                    <div className="flex justify-end">
-                      <a
-                        href={downloadInfo.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1 text-[11px] text-[#9BA3B4] hover:text-white underline"
-                      >
-                        <ExternalLink className="w-3 h-3" />
-                        <span>Mở link tải trực tiếp nếu trình duyệt chặn</span>
-                      </a>
-                    </div>
-                  )}
+                  {downloadInfo.jobId !== 'local-wasm' &&
+                    downloadInfo.fileSize <= 28 * 1024 * 1024 && (
+                      <div className="flex justify-end">
+                        <a
+                          href={downloadInfo.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-[11px] text-[#9BA3B4] hover:text-white underline"
+                        >
+                          <ExternalLink className="w-3 h-3" />
+                          <span>Mở link tải trực tiếp nếu trình duyệt chặn</span>
+                        </a>
+                      </div>
+                    )}
                 </div>
               )}
             </div>

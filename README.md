@@ -18,3 +18,13 @@ Mở trình duyệt tại: `http://localhost:3000`
 npm run build
 npm start
 ```
+
+## Triển khai lên GitHub Pages qua GitHub Actions
+Dự án đã tích hợp sẵn workflow `.github/workflows/deploy-pages.yml` và bộ mã hóa **FFmpeg WebAssembly** chạy trực tiếp trên trình duyệt (không cần máy chủ backend khi host trên GitHub Pages).
+
+1. Đẩy mã nguồn lên nhánh `main` (hoặc `master`) của repository trên GitHub.
+2. Vào **Settings → Pages** trên repository GitHub của bạn.
+3. Ở mục **Build and deployment → Source**, chọn **GitHub Actions**.
+4. Workflow **Deploy Kinetik Studio to GitHub Pages** sẽ tự động chạy (tự động nhận đúng đường dẫn `/<ten-repo>/` hoặc `/` nếu là repo `<username>.github.io`).
+5. Nếu dùng custom domain trỏ thẳng vào `/`, bạn có thể thêm Repository Variable `PAGES_BASE_PATH=/` trong **Settings → Secrets and variables → Actions → Variables**.
+
