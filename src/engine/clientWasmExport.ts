@@ -213,27 +213,6 @@ export async function exportWithBrowserWasm(
         const vDur = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 1;
         const targetTime = mapVideoLoopTime(t, vDur, project);
         await seekVideoTo(video, targetTime);
-
-        ctx.clearRect(0, 0, width, height);
-        const vw = video.videoWidth || width;
-        const vh = video.videoHeight || height;
-        const scale = Math.max(width / vw, height / vh);
-        const dw = vw * scale;
-        const dh = vh * scale;
-        const dx = (width - dw) / 2;
-        const dy = (height - dh) / 2;
-
-        ctx.save();
-        if (project.background.videoBlur > 0.2) {
-          ctx.filter = `blur(${project.background.videoBlur.toFixed(1)}px)`;
-        }
-        ctx.drawImage(video, dx, dy, dw, dh);
-        ctx.restore();
-
-        if (project.background.videoDimmer > 0.01) {
-          ctx.fillStyle = `rgba(0,0,0,${project.background.videoDimmer.toFixed(2)})`;
-          ctx.fillRect(0, 0, width, height);
-        }
       }
 
       renderKineticScene(ctx, {
@@ -242,7 +221,8 @@ export async function exportWithBrowserWasm(
         timeSec: t,
         project,
         audioEnergy: energy,
-        forceTransparentBg: isAlphaTransparent || Boolean(bgVideoObj),
+        bgVideo: bgVideoObj?.video ?? null,
+        forceTransparentBg: isAlphaTransparent,
         skipPostFx: !includeBackground,
         showSafeGuides: false,
         selectedCueId: null,
@@ -407,9 +387,11 @@ export async function exportWithBrowserWasm(
         '-c:v',
         'libx264',
         '-preset',
-        'veryfast',
+        'ultrafast',
+        '-tune',
+        'zerolatency',
         '-crf',
-        '20',
+        '21',
         '-pix_fmt',
         'yuv420p',
         '-movflags',
@@ -446,6 +428,53 @@ export async function exportWithBrowserWasm(
     }
     for (const fname of createdFiles) {
       await ffmpeg.deleteFile(fname).catch(() => {});
+    }
+  }
+}
+
+export async function remuxMp4WithWavAudioWasm(
+  videoBytes: Uint8Array,
+  wavBytes: Uint8Array,
+  renderDuration: number
+): Promise<Blob> {
+  const ffmpeg = await loadBrowserFFmpeg(() => {});
+  const tempFiles = ['wc_video.mp4', 'wc_audio.wav', 'wc_final.mp4'];
+  try {
+    await ffmpeg.writeFile('wc_video.mp4', videoBytes);
+    await ffmpeg.writeFile('wc_audio.wav', wavBytes);
+
+    const code = await ffmpeg.exec([
+      '-i',
+      'wc_video.mp4',
+      '-i',
+      'wc_audio.wav',
+      '-c:v',
+      'copy',
+      '-c:a',
+      'aac',
+      '-b:a',
+      '192k',
+      '-ar',
+      '48000',
+      '-movflags',
+      '+faststart',
+      '-t',
+      renderDuration.toFixed(3),
+      '-shortest',
+      'wc_final.mp4',
+    ]);
+
+    if (code !== 0) {
+      throw new Error('Không thể ghép âm thanh vào file MP4');
+    }
+
+    const out = await ffmpeg.readFile('wc_final.mp4');
+    const outBytes =
+      out instanceof Uint8Array ? new Uint8Array(out) : new TextEncoder().encode(String(out));
+    return new Blob([outBytes], { type: 'video/mp4' });
+  } finally {
+    for (const f of tempFiles) {
+      await ffmpeg.deleteFile(f).catch(() => {});
     }
   }
 }

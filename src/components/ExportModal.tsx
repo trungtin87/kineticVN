@@ -8,6 +8,7 @@ import {
 } from '../types/studio';
 import { renderKineticScene } from '../engine/kineticRenderer';
 import { exportWithBrowserWasm } from '../engine/clientWasmExport';
+import { exportMp4WithWebCodecs } from '../engine/webCodecsMp4Export';
 import { sampleAudioEnergy } from '../utils/audioEnvelope';
 
 interface ExportModalProps {
@@ -289,6 +290,50 @@ export const ExportModal: React.FC<ExportModalProps> = ({
 
       const serverReady = await checkServerAvailable();
       if (!serverReady) {
+        if (format === 'mp4') {
+          try {
+            const wcResult = await exportMp4WithWebCodecs({
+              project,
+              width,
+              height,
+              fps,
+              totalFrames,
+              renderDuration,
+              includeBackground,
+              audioFile,
+              bgVideoFile,
+              bgAudioFile,
+              audioEnvelope,
+              onPhaseChange: (p) => setPhase(p),
+              onProgress: (pct) => setProgress(pct),
+              onStatus: (label) => setStatusLabel(label),
+            });
+
+            if (wcResult.supported) {
+              const blobUrl = URL.createObjectURL(wcResult.blob);
+              setCachedBlobUrl(blobUrl);
+              setCodecNote(
+                wcResult.usedHardware
+                  ? 'Đã dùng bộ mã hóa phần cứng H.264 (WebCodecs) giúp xuất nhanh trên trình duyệt.'
+                  : null
+              );
+              setPhase('done');
+              setProgress(100);
+              setStatusLabel('Xuất video hoàn tất (WebCodecs)!');
+              setDownloadInfo({
+                jobId: 'local-wasm',
+                url: blobUrl,
+                filename: wcResult.filename,
+                fileSize: wcResult.blob.size,
+                mime: wcResult.blob.type,
+              });
+              return;
+            }
+          } catch (wcErr) {
+            console.warn('WebCodecs MP4 fallback to FFmpeg.wasm:', wcErr);
+          }
+        }
+
         const result = await exportWithBrowserWasm({
           project,
           format,
