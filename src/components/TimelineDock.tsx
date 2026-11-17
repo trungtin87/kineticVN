@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { Combine, Scissors } from 'lucide-react';
 import { SubtitleCue } from '../types/studio';
 import { formatTimecodeShort } from '../utils/srtParser';
 
@@ -11,6 +12,8 @@ interface TimelineDockProps {
   onSeek: (timeSec: number) => void;
   onSelectCue: (cueId: string) => void;
   onUpdateCueTiming: (cueId: string, startSec: number, endSec: number) => void;
+  onSplitCue?: (cueId: string) => void;
+  onMergeNextCue?: (cueId: string) => void;
   className?: string;
 }
 
@@ -23,6 +26,8 @@ export const TimelineDock: React.FC<TimelineDockProps> = ({
   onSeek,
   onSelectCue,
   onUpdateCueTiming,
+  onSplitCue,
+  onMergeNextCue,
   className = '',
 }) => {
   const trackRef = useRef<HTMLDivElement>(null);
@@ -137,11 +142,51 @@ export const TimelineDock: React.FC<TimelineDockProps> = ({
   }
 
   const playheadPct = Math.max(0, Math.min(100, (currentTimeSec / safeDur) * 100));
+  const cueAtPlayhead = cues.find((c) => currentTimeSec >= c.startSec && currentTimeSec <= c.endSec);
+  const activeTargetCue = cueAtPlayhead || cues.find((c) => c.id === selectedCueId) || null;
+  const activeTargetIdx = activeTargetCue ? cues.findIndex((c) => c.id === activeTargetCue.id) : -1;
+  const canSplit = Boolean(activeTargetCue && activeTargetCue.endSec - activeTargetCue.startSec >= 0.35);
+  const canMerge = Boolean(activeTargetIdx >= 0 && activeTargetIdx < cues.length - 1);
 
   return (
     <footer
-      className={`h-44 lg:h-36 bg-[#111318] lg:border-t border-white/8 px-3 lg:px-4 py-2.5 flex flex-col justify-between shrink-0 select-none ${className}`}
+      className={`h-48 lg:h-40 bg-[#111318] lg:border-t border-white/8 px-3 lg:px-4 py-2 flex flex-col justify-between shrink-0 select-none ${className}`}
     >
+      {/* Compact Timeline Quick-Action Bar */}
+      {(onSplitCue || onMergeNextCue) && (
+        <div className="flex items-center justify-between gap-2 pb-1.5 text-[11px]">
+          <div className="flex items-center gap-1.5">
+            {onSplitCue && (
+              <button
+                type="button"
+                disabled={!canSplit}
+                onClick={() => activeTargetCue && onSplitCue(activeTargetCue.id)}
+                title="Tách câu tại vị trí kim phát (hoặc chia đôi câu đang chọn)"
+                className="px-2 py-1 bg-[#171A21] hover:bg-[#222735] disabled:opacity-35 border border-white/10 rounded text-[#E2E5EC] flex items-center gap-1 cursor-pointer disabled:cursor-not-allowed transition-colors"
+              >
+                <Scissors className="w-3 h-3 text-[#FF5A1F]" />
+                <span>Tách câu</span>
+              </button>
+            )}
+            {onMergeNextCue && (
+              <button
+                type="button"
+                disabled={!canMerge}
+                onClick={() => activeTargetCue && onMergeNextCue(activeTargetCue.id)}
+                title="Gộp câu đang chọn với câu ngay sau nó"
+                className="px-2 py-1 bg-[#171A21] hover:bg-[#222735] disabled:opacity-35 border border-white/10 rounded text-[#E2E5EC] flex items-center gap-1 cursor-pointer disabled:cursor-not-allowed transition-colors"
+              >
+                <Combine className="w-3 h-3 text-[#38BDF8]" />
+                <span>Gộp câu sau</span>
+              </button>
+            )}
+          </div>
+          <span className="text-[10px] text-[#7C8496] hidden sm:inline">
+            Kéo mép khối để chỉnh timing · Space: Phát/Dừng · Ctrl+Z: Hoàn tác
+          </span>
+        </div>
+      )}
+
       <div
         ref={trackRef}
         onPointerDown={handleTrackPointerDown}

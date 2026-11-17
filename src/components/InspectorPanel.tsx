@@ -3,9 +3,14 @@ import {
   AlignCenter,
   AlignLeft,
   AlignRight,
+  Clock,
+  Combine,
   Film,
+  ImagePlus,
   Layers,
+  Palette,
   RotateCcw,
+  Scissors,
   Sparkles,
   Type,
   Upload,
@@ -22,12 +27,16 @@ import {
   EffectsConfig,
   EmphasisStyle,
   MotionConfig,
+  ProgressBarConfig,
   SubtitleCue,
   TextAlignMode,
   TextTransformMode,
   TypographyConfig,
+  WatermarkConfig,
+  WatermarkPosition,
   WordStyleOverride,
 } from '../types/studio';
+import { preloadWatermarkImage } from '../engine/kineticRenderer';
 import {
   CURATED_GOOGLE_FONTS,
   ensureGoogleFontLoaded,
@@ -36,7 +45,13 @@ import {
   removeCustomGoogleFont,
   saveCustomGoogleFont,
 } from '../utils/googleFonts';
-import { autoWrapCueText, balanceTwoLines, tokenizeCueText } from '../utils/srtParser';
+import {
+  autoWrapCueText,
+  balanceTwoLines,
+  distributeWordTimingsEvenly,
+  tokenizeCueText,
+} from '../utils/srtParser';
+import { STYLE_TEMPLATES, StyleTemplate } from '../utils/styleTemplates';
 import { InspectorTab } from './TopBar';
 
 interface InspectorPanelProps {
@@ -47,15 +62,23 @@ interface InspectorPanelProps {
   motion: MotionConfig;
   background: BackgroundConfig;
   effects?: EffectsConfig;
+  watermark?: WatermarkConfig;
+  progressBar?: ProgressBarConfig;
   bgVideoName: string | null;
   bgVideoDurationSec?: number;
   totalDurationSec?: number;
   bgAudioName?: string | null;
-  onUpdateCue: (cueId: string, patch: Partial<SubtitleCue>) => void;
-  onUpdateTypography: (patch: Partial<TypographyConfig>) => void;
-  onUpdateMotion: (patch: Partial<MotionConfig>) => void;
-  onUpdateBackground: (patch: Partial<BackgroundConfig>) => void;
-  onUpdateEffects?: (patch: Partial<EffectsConfig>) => void;
+  canMergeNextCue?: boolean;
+  onUpdateCue: (cueId: string, patch: Partial<SubtitleCue>, coalesceKey?: string) => void;
+  onSplitCue?: (cueId: string) => void;
+  onMergeNextCue?: (cueId: string) => void;
+  onUpdateTypography: (patch: Partial<TypographyConfig>, coalesceKey?: string) => void;
+  onUpdateMotion: (patch: Partial<MotionConfig>, coalesceKey?: string) => void;
+  onUpdateBackground: (patch: Partial<BackgroundConfig>, coalesceKey?: string) => void;
+  onUpdateEffects?: (patch: Partial<EffectsConfig>, coalesceKey?: string) => void;
+  onUpdateWatermark?: (patch: Partial<WatermarkConfig>, coalesceKey?: string) => void;
+  onUpdateProgressBar?: (patch: Partial<ProgressBarConfig>, coalesceKey?: string) => void;
+  onApplyTemplate?: (template: StyleTemplate) => void;
   onUploadBgVideo: (file: File) => void;
   onClearBgVideo: () => void;
   onUploadBgAudio?: (file: File) => void;
@@ -104,15 +127,23 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
   motion,
   background,
   effects,
+  watermark,
+  progressBar,
   bgVideoName,
   bgVideoDurationSec = 0,
   totalDurationSec = 0,
   bgAudioName = null,
+  canMergeNextCue = false,
   onUpdateCue,
+  onSplitCue,
+  onMergeNextCue,
   onUpdateTypography,
   onUpdateMotion,
   onUpdateBackground,
   onUpdateEffects,
+  onUpdateWatermark,
+  onUpdateProgressBar,
+  onApplyTemplate,
   onUploadBgVideo,
   onClearBgVideo,
   onUploadBgAudio,
@@ -120,6 +151,7 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
   className = '',
 }) => {
   const [activeWordIdx, setActiveWordIdx] = useState<number | null>(null);
+  const [showWordTimings, setShowWordTimings] = useState(false);
   const [customFonts, setCustomFonts] = useState<FontOption[]>(() => getStoredCustomFonts());
   const [fontCategory, setFontCategory] = useState<'ALL' | FontOption['category']>('ALL');
   const [fontQuery, setFontQuery] = useState('');
@@ -326,43 +358,183 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                       1 dòng
                     </button>
                   </div>
+
+                  {(onSplitCue || onMergeNextCue) && (
+                    <div className="grid grid-cols-2 gap-1.5">
+                      {onSplitCue && (
+                        <button
+                          type="button"
+                          disabled={selectedCue.endSec - selectedCue.startSec < 0.35}
+                          onClick={() => onSplitCue(selectedCue.id)}
+                          className="px-2.5 py-1.5 bg-[#171A21] hover:bg-[#20242E] disabled:opacity-35 border border-white/10 rounded text-[11px] text-[#E2E5EC] flex items-center justify-center gap-1.5 cursor-pointer disabled:cursor-not-allowed"
+                        >
+                          <Scissors className="w-3 h-3 text-[#FF5A1F]" />
+                          <span>Tách câu tại con trỏ</span>
+                        </button>
+                      )}
+                      {onMergeNextCue && (
+                        <button
+                          type="button"
+                          disabled={!canMergeNextCue}
+                          onClick={() => onMergeNextCue(selectedCue.id)}
+                          className="px-2.5 py-1.5 bg-[#171A21] hover:bg-[#20242E] disabled:opacity-35 border border-white/10 rounded text-[11px] text-[#E2E5EC] flex items-center justify-center gap-1.5 cursor-pointer disabled:cursor-not-allowed"
+                        >
+                          <Combine className="w-3 h-3 text-[#38BDF8]" />
+                          <span>Gộp với câu sau</span>
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {/* Timing Fine Tuning */}
-                <div className="grid grid-cols-2 gap-3 pt-2 border-t border-white/8">
-                  <div className="space-y-1">
-                    <label className="text-[11px] text-[#8E95A5]">Bắt đầu (giây)</label>
-                    <input
-                      type="number"
-                      step={0.05}
-                      min={0}
-                      value={Number(selectedCue.startSec.toFixed(2))}
-                      onChange={(e) => {
-                        const val = Math.max(0, Number(e.target.value) || 0);
-                        onUpdateCue(selectedCue.id, {
-                          startSec: val,
-                          endSec: Math.max(val + 0.15, selectedCue.endSec),
-                        });
-                      }}
-                      className="w-full bg-[#171A21] border border-white/10 rounded px-2.5 py-1.5 text-xs font-mono-tabular text-[#F4F5F7] focus:outline-none focus:border-[#FF5A1F]"
-                    />
+                <div className="space-y-3 pt-2 border-t border-white/8">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-[11px] text-[#8E95A5]">Bắt đầu (giây)</label>
+                      <input
+                        type="number"
+                        step={0.05}
+                        min={0}
+                        value={Number(selectedCue.startSec.toFixed(2))}
+                        onChange={(e) => {
+                          const val = Math.max(0, Number(e.target.value) || 0);
+                          onUpdateCue(
+                            selectedCue.id,
+                            {
+                              startSec: val,
+                              endSec: Math.max(val + 0.15, selectedCue.endSec),
+                            },
+                            `cue-start-${selectedCue.id}`
+                          );
+                        }}
+                        className="w-full bg-[#171A21] border border-white/10 rounded px-2.5 py-1.5 text-xs font-mono-tabular text-[#F4F5F7] focus:outline-none focus:border-[#FF5A1F]"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[11px] text-[#8E95A5]">Kết thúc (giây)</label>
+                      <input
+                        type="number"
+                        step={0.05}
+                        min={selectedCue.startSec + 0.15}
+                        value={Number(selectedCue.endSec.toFixed(2))}
+                        onChange={(e) => {
+                          const val = Math.max(
+                            selectedCue.startSec + 0.15,
+                            Number(e.target.value) || selectedCue.startSec + 0.15
+                          );
+                          onUpdateCue(
+                            selectedCue.id,
+                            { endSec: val },
+                            `cue-end-${selectedCue.id}`
+                          );
+                        }}
+                        className="w-full bg-[#171A21] border border-white/10 rounded px-2.5 py-1.5 text-xs font-mono-tabular text-[#F4F5F7] focus:outline-none focus:border-[#FF5A1F]"
+                      />
+                    </div>
                   </div>
-                  <div className="space-y-1">
-                    <label className="text-[11px] text-[#8E95A5]">Kết thúc (giây)</label>
-                    <input
-                      type="number"
-                      step={0.05}
-                      min={selectedCue.startSec + 0.15}
-                      value={Number(selectedCue.endSec.toFixed(2))}
-                      onChange={(e) => {
-                        const val = Math.max(
-                          selectedCue.startSec + 0.15,
-                          Number(e.target.value) || selectedCue.startSec + 0.15
-                        );
-                        onUpdateCue(selectedCue.id, { endSec: val });
-                      }}
-                      className="w-full bg-[#171A21] border border-white/10 rounded px-2.5 py-1.5 text-xs font-mono-tabular text-[#F4F5F7] focus:outline-none focus:border-[#FF5A1F]"
-                    />
+
+                  {/* Per-Word Exact Timestamps Editor */}
+                  <div className="bg-[#0E1015] border border-white/8 rounded-md p-2.5 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setShowWordTimings((v) => !v)}
+                        className="flex items-center gap-1.5 text-[11px] font-medium text-[#D5D9E2] hover:text-white cursor-pointer"
+                      >
+                        <Clock className="w-3.5 h-3.5 text-[#34D399]" />
+                        <span>
+                          Timing từng từ ({selectedCue.wordTimings ? 'Đang bật' : 'Tự động'})
+                        </span>
+                      </button>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const timings = distributeWordTimingsEvenly(selectedCue);
+                            onUpdateCue(selectedCue.id, { wordTimings: timings });
+                            setShowWordTimings(true);
+                          }}
+                          className="text-[10px] font-medium text-[#34D399] hover:underline cursor-pointer"
+                        >
+                          Chia đều từng từ
+                        </button>
+                        {selectedCue.wordTimings && (
+                          <button
+                            type="button"
+                            onClick={() => onUpdateCue(selectedCue.id, { wordTimings: null })}
+                            className="text-[10px] text-[#8E95A5] hover:text-red-400 cursor-pointer"
+                          >
+                            Xóa
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {showWordTimings && selectedCue.wordTimings && (
+                      <div className="max-h-40 overflow-y-auto space-y-1.5 pt-1 border-t border-white/6">
+                        {tokenizeCueText(selectedCue.text).flatWords.map((tok) => {
+                          const wt = selectedCue.wordTimings?.[tok.wordIndex] ?? {
+                            startSec: selectedCue.startSec,
+                            endSec: selectedCue.endSec,
+                          };
+                          return (
+                            <div
+                              key={tok.wordIndex}
+                              className="grid grid-cols-[1fr_68px_68px] items-center gap-1.5 text-[11px]"
+                            >
+                              <span className="truncate text-[#E2E5EC]" title={tok.word}>
+                                {tok.word}
+                              </span>
+                              <input
+                                type="number"
+                                step={0.02}
+                                min={0}
+                                value={Number(wt.startSec.toFixed(2))}
+                                onChange={(e) => {
+                                  const nextVal = Math.max(0, Number(e.target.value) || 0);
+                                  const nextArr = [...(selectedCue.wordTimings || [])];
+                                  nextArr[tok.wordIndex] = {
+                                    startSec: nextVal,
+                                    endSec: Math.max(nextVal + 0.05, wt.endSec),
+                                  };
+                                  onUpdateCue(
+                                    selectedCue.id,
+                                    { wordTimings: nextArr },
+                                    `wt-s-${selectedCue.id}-${tok.wordIndex}`
+                                  );
+                                }}
+                                className="bg-[#171A21] border border-white/10 rounded px-1.5 py-0.5 text-[11px] font-mono-tabular text-[#F4F5F7] focus:outline-none focus:border-[#FF5A1F]"
+                              />
+                              <input
+                                type="number"
+                                step={0.02}
+                                min={wt.startSec + 0.05}
+                                value={Number(wt.endSec.toFixed(2))}
+                                onChange={(e) => {
+                                  const nextVal = Math.max(
+                                    wt.startSec + 0.05,
+                                    Number(e.target.value) || wt.startSec + 0.05
+                                  );
+                                  const nextArr = [...(selectedCue.wordTimings || [])];
+                                  nextArr[tok.wordIndex] = {
+                                    startSec: wt.startSec,
+                                    endSec: nextVal,
+                                  };
+                                  onUpdateCue(
+                                    selectedCue.id,
+                                    { wordTimings: nextArr },
+                                    `wt-e-${selectedCue.id}-${tok.wordIndex}`
+                                  );
+                                }}
+                                className="bg-[#171A21] border border-white/10 rounded px-1.5 py-0.5 text-[11px] font-mono-tabular text-[#F4F5F7] focus:outline-none focus:border-[#FF5A1F]"
+                              />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -818,8 +990,60 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
 
         {activeTab === 'typography' && (
           <>
+            {/* 0. 1-Click Creator Style Templates */}
+            {onApplyTemplate && (
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <label className="text-xs font-semibold text-[#E2E5EC] flex items-center gap-1.5">
+                    <Palette className="w-3.5 h-3.5 text-[#FF5A1F]" />
+                    <span>Style Template 1-Click</span>
+                  </label>
+                  <span className="text-[10px] text-[#8E95A5]">{STYLE_TEMPLATES.length} mẫu</span>
+                </div>
+                <div className="grid grid-cols-2 gap-1.5 max-h-44 overflow-y-auto pr-0.5">
+                  {STYLE_TEMPLATES.map((tpl) => {
+                    const isMatching =
+                      typography.fontFamily === tpl.typography.fontFamily &&
+                      motion.preset === tpl.motion.preset &&
+                      background.presetId === tpl.background.presetId;
+                    return (
+                      <button
+                        key={tpl.id}
+                        type="button"
+                        onClick={() => {
+                          if (tpl.typography.fontFamily) {
+                            ensureGoogleFontLoaded(tpl.typography.fontFamily);
+                          }
+                          onApplyTemplate(tpl);
+                        }}
+                        className={`p-2 rounded-md border text-left transition-colors cursor-pointer ${
+                          isMatching
+                            ? 'bg-[#FF5A1F]/16 border-[#FF5A1F] text-white'
+                            : 'bg-[#171A21] border-white/8 text-[#D5D9E2] hover:bg-[#1D212B]'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-1 mb-0.5">
+                          <span className="text-[11px] font-semibold truncate">{tpl.name}</span>
+                          <span className="flex items-center gap-0.5 shrink-0">
+                            {tpl.swatch.map((hex, sIdx) => (
+                              <span
+                                key={sIdx}
+                                style={{ backgroundColor: hex }}
+                                className="w-2 h-2 rounded-xs border border-white/20"
+                              />
+                            ))}
+                          </span>
+                        </div>
+                        <div className="text-[10px] text-[#8E95A5] truncate">{tpl.desc}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {/* 1. Kinetic Animation Presets */}
-            <div className="space-y-2.5">
+            <div className={`space-y-2.5 ${onApplyTemplate ? 'pt-4 border-t border-white/8' : ''}`}>
               <div className="flex items-center justify-between gap-2">
                 <label className="text-xs font-semibold text-[#E2E5EC]">
                   Hiệu ứng chuyển động chữ
@@ -1859,6 +2083,233 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                     />
                   </div>
                 </div>
+              </div>
+            )}
+
+            {/* Brand Watermark / Logo PNG & Video Progress Bar */}
+            {(onUpdateWatermark || onUpdateProgressBar) && (
+              <div className="space-y-4 pt-4 border-t border-white/8">
+                {onUpdateWatermark && watermark && (
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-semibold text-[#E2E5EC]">
+                        Logo / Watermark kênh
+                      </label>
+                      <input
+                        type="checkbox"
+                        checked={watermark.enabled}
+                        onChange={(e) => onUpdateWatermark({ enabled: e.target.checked })}
+                        className="w-4 h-4 accent-[#FF5A1F]"
+                      />
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <label className="flex-1 flex items-center justify-center gap-2 py-2 px-3 bg-[#171A21] hover:bg-[#1D212B] border border-white/10 rounded-md cursor-pointer text-xs text-[#E2E5EC] truncate">
+                        <ImagePlus className="w-3.5 h-3.5 text-[#FF5A1F] shrink-0" />
+                        <span className="truncate">
+                          {watermark.name || (watermark.imageDataUrl ? 'Đổi Logo PNG' : 'Tải Logo PNG / SVG')}
+                        </span>
+                        <input
+                          type="file"
+                          accept="image/png,image/webp,image/svg+xml,image/jpeg"
+                          className="hidden"
+                          onChange={(e) => {
+                            const f = e.target.files?.[0];
+                            if (f) {
+                              const reader = new FileReader();
+                              reader.onload = () => {
+                                const dataUrl = typeof reader.result === 'string' ? reader.result : null;
+                                if (dataUrl) {
+                                  preloadWatermarkImage(dataUrl);
+                                  onUpdateWatermark({
+                                    enabled: true,
+                                    imageDataUrl: dataUrl,
+                                    name: f.name,
+                                  });
+                                }
+                              };
+                              reader.readAsDataURL(f);
+                            }
+                            e.target.value = '';
+                          }}
+                        />
+                      </label>
+                      {watermark.imageDataUrl && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onUpdateWatermark({ enabled: false, imageDataUrl: null, name: null })
+                          }
+                          title="Xóa Logo"
+                          className="p-2 text-[#8E95A5] hover:text-red-400 bg-[#171A21] border border-white/10 rounded-md cursor-pointer"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+
+                    {watermark.imageDataUrl && watermark.enabled && (
+                      <div className="space-y-2.5 p-2.5 bg-[#151821] border border-white/8 rounded-md">
+                        <div className="grid grid-cols-2 gap-1.5">
+                          {(
+                            [
+                              { id: 'top-left', label: 'Trên Trái' },
+                              { id: 'top-right', label: 'Trên Phải' },
+                              { id: 'bottom-left', label: 'Dưới Trái' },
+                              { id: 'bottom-right', label: 'Dưới Phải' },
+                            ] as { id: WatermarkPosition; label: string }[]
+                          ).map((pos) => (
+                            <button
+                              key={pos.id}
+                              type="button"
+                              onClick={() => onUpdateWatermark({ position: pos.id })}
+                              className={`py-1 px-2 text-[11px] rounded border transition-colors cursor-pointer ${
+                                watermark.position === pos.id
+                                  ? 'bg-[#FF5A1F]/18 border-[#FF5A1F] text-white'
+                                  : 'bg-[#111318] border-white/8 text-[#9BA3B4] hover:text-white'
+                              }`}
+                            >
+                              {pos.label}
+                            </button>
+                          ))}
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="space-y-1">
+                            <div className="flex justify-between text-[10px] text-[#8E95A5]">
+                              <span>Kích thước</span>
+                              <span className="font-mono-tabular">
+                                {Math.round(watermark.scale * 100)}%
+                              </span>
+                            </div>
+                            <input
+                              type="range"
+                              min={0.05}
+                              max={0.28}
+                              step={0.01}
+                              value={watermark.scale}
+                              onChange={(e) =>
+                                onUpdateWatermark({ scale: Number(e.target.value) }, 'wm-scale')
+                              }
+                              className="w-full"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <div className="flex justify-between text-[10px] text-[#8E95A5]">
+                              <span>Độ mờ</span>
+                              <span className="font-mono-tabular">
+                                {Math.round(watermark.opacity * 100)}%
+                              </span>
+                            </div>
+                            <input
+                              type="range"
+                              min={0.1}
+                              max={1}
+                              step={0.05}
+                              value={watermark.opacity}
+                              onChange={(e) =>
+                                onUpdateWatermark({ opacity: Number(e.target.value) }, 'wm-opacity')
+                              }
+                              className="w-full"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {onUpdateProgressBar && progressBar && (
+                  <div className="space-y-2.5 pt-3 border-t border-white/8">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-semibold text-[#E2E5EC]">
+                        Thanh tiến trình Video (Progress Bar)
+                      </label>
+                      <input
+                        type="checkbox"
+                        checked={progressBar.enabled}
+                        onChange={(e) => onUpdateProgressBar({ enabled: e.target.checked })}
+                        className="w-4 h-4 accent-[#FF5A1F]"
+                      />
+                    </div>
+
+                    {progressBar.enabled && (
+                      <div className="space-y-2.5 p-2.5 bg-[#151821] border border-white/8 rounded-md">
+                        <div className="grid grid-cols-2 gap-1.5">
+                          {(['top', 'bottom'] as const).map((pos) => (
+                            <button
+                              key={pos}
+                              type="button"
+                              onClick={() => onUpdateProgressBar({ position: pos })}
+                              className={`py-1 text-[11px] rounded border cursor-pointer ${
+                                progressBar.position === pos
+                                  ? 'bg-[#FF5A1F]/18 border-[#FF5A1F] text-white'
+                                  : 'bg-[#111318] border-white/8 text-[#9BA3B4]'
+                              }`}
+                            >
+                              {pos === 'top' ? 'Mép trên' : 'Mép dưới'}
+                            </button>
+                          ))}
+                        </div>
+
+                        <div className="grid grid-cols-3 gap-1.5">
+                          {(
+                            [
+                              { id: 'bar', label: 'Thanh phẳng' },
+                              { id: 'pill', label: 'Bo tròn' },
+                              { id: 'glow', label: 'Phát sáng' },
+                            ] as const
+                          ).map((st) => (
+                            <button
+                              key={st.id}
+                              type="button"
+                              onClick={() => onUpdateProgressBar({ style: st.id })}
+                              className={`py-1 text-[10px] rounded border cursor-pointer ${
+                                progressBar.style === st.id
+                                  ? 'bg-[#FF5A1F]/18 border-[#FF5A1F] text-white'
+                                  : 'bg-[#111318] border-white/8 text-[#9BA3B4]'
+                              }`}
+                            >
+                              {st.label}
+                            </button>
+                          ))}
+                        </div>
+
+                        <div className="grid grid-cols-[1fr_auto] gap-2 items-center">
+                          <div className="space-y-1">
+                            <div className="flex justify-between text-[10px] text-[#8E95A5]">
+                              <span>Độ dày</span>
+                              <span className="font-mono-tabular">{progressBar.heightPx}px</span>
+                            </div>
+                            <input
+                              type="range"
+                              min={4}
+                              max={20}
+                              step={1}
+                              value={progressBar.heightPx}
+                              onChange={(e) =>
+                                onUpdateProgressBar(
+                                  { heightPx: Number(e.target.value) },
+                                  'pb-height'
+                                )
+                              }
+                              className="w-full"
+                            />
+                          </div>
+                          <input
+                            type="color"
+                            value={progressBar.color}
+                            onChange={(e) =>
+                              onUpdateProgressBar({ color: e.target.value }, 'pb-color')
+                            }
+                            title="Màu thanh tiến trình"
+                            className="w-7 h-6 bg-transparent border-0 cursor-pointer rounded"
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           </>

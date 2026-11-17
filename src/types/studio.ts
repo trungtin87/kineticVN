@@ -73,6 +73,11 @@ export interface WordStyleOverride {
   uppercase?: boolean;
 }
 
+export interface WordTiming {
+  startSec: number;
+  endSec: number;
+}
+
 export interface SubtitleCue {
   id: string;
   index: number;
@@ -82,6 +87,8 @@ export interface SubtitleCue {
   text: string;
   /** Word-level emphasis keyed by flat word index across lines */
   wordStyles: Record<number, WordStyleOverride>;
+  /** Optional per-word exact timeline timestamps (seconds) */
+  wordTimings?: WordTiming[] | null;
   /** Optional per-cue overrides */
   customPos?: { x: number; y: number } | null; // normalized 0..1
   customAlign?: TextAlignMode | null;
@@ -153,6 +160,32 @@ export interface EffectsConfig {
   textCardColor: string;
 }
 
+export type WatermarkPosition =
+  | 'top-left'
+  | 'top-right'
+  | 'bottom-left'
+  | 'bottom-right';
+
+export interface WatermarkConfig {
+  enabled: boolean;
+  imageDataUrl: string | null;
+  name?: string | null;
+  position: WatermarkPosition;
+  scale: number; // 0.06..0.28 fraction of canvas short edge
+  opacity: number; // 0.1..1
+  marginPx: number; // 16..96 ref px at 1080
+}
+
+export interface ProgressBarConfig {
+  enabled: boolean;
+  position: 'top' | 'bottom';
+  style: 'bar' | 'pill' | 'glow';
+  heightPx: number; // 4..20 ref px at 1080
+  color: string;
+  trackColor: string;
+  opacity: number; // 0.2..1
+}
+
 export interface StudioProject {
   name: string;
   aspectRatio: AspectRatioId;
@@ -161,6 +194,8 @@ export interface StudioProject {
   motion: MotionConfig;
   background: BackgroundConfig;
   effects?: EffectsConfig;
+  watermark?: WatermarkConfig;
+  progressBar?: ProgressBarConfig;
 }
 
 export type ExportFormat = 'mp4' | 'prores4444';

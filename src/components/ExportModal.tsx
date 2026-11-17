@@ -1,12 +1,12 @@
-import React, { useEffect, useState } from 'react';
-import { CheckCircle2, Download, ExternalLink, Film, Layers, Loader2, X } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { AlertTriangle, CheckCircle2, Download, ExternalLink, Film, Layers, Loader2, X } from 'lucide-react';
 import {
   ASPECT_RATIOS,
   ExportFormat,
   ExportResolution,
   StudioProject,
 } from '../types/studio';
-import { renderKineticScene } from '../engine/kineticRenderer';
+import { preloadWatermarkImage, renderKineticScene } from '../engine/kineticRenderer';
 import { sampleAudioEnergy } from '../utils/audioEnvelope';
 import { preloadProjectFonts } from '../utils/googleFonts';
 
@@ -121,6 +121,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   const [isDownloadingFile, setIsDownloadingFile] = useState(false);
   const [downloadPct, setDownloadPct] = useState(0);
   const [codecNote, setCodecNote] = useState<string | null>(null);
+  const abortCtrlRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     return () => {
@@ -129,6 +130,12 @@ export const ExportModal: React.FC<ExportModalProps> = ({
       }
     };
   }, [cachedBlobUrl]);
+
+  useEffect(() => {
+    return () => {
+      abortCtrlRef.current?.abort();
+    };
+  }, []);
 
   if (!isOpen) return null;
 
@@ -157,10 +164,12 @@ export const ExportModal: React.FC<ExportModalProps> = ({
     field: 'audio' | 'bgVideo' | 'bgAudio',
     file: Blob,
     filename: string,
-    humanLabel: string
+    humanLabel: string,
+    signal?: AbortSignal
   ) => {
     const totalChunks = Math.max(1, Math.ceil(file.size / ASSET_CHUNK_BYTES));
     for (let idx = 0; idx < totalChunks; idx++) {
+      if (signal?.aborted) throw new DOMException('Đã hủy xuất video.', 'AbortError');
       const start = idx * ASSET_CHUNK_BYTES;
       const end = Math.min(file.size, start + ASSET_CHUNK_BYTES);
       const slice = await file.slice(start, end).arrayBuffer();
@@ -172,6 +181,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
           'x-chunk-index': String(idx),
         },
         body: slice,
+        signal,
       });
       if (!res.ok) {
         const errBody = await res.json().catch(() => ({}));
@@ -272,7 +282,21 @@ export const ExportModal: React.FC<ExportModalProps> = ({
     }
   };
 
+  const handleCancelExport = () => {
+    abortCtrlRef.current?.abort();
+  };
+
   const startExport = async () => {
+    const ctrl = new AbortController();
+    abortCtrlRef.current = ctrl;
+    const { signal } = ctrl;
+
+    const checkNotAborted = () => {
+      if (signal.aborted) {
+        throw new DOMException('Đã hủy xuất video theo yêu cầu.', 'AbortError');
+      }
+    };
+
     try {
       if (cachedBlobUrl) {
         URL.revokeObjectURL(cachedBlobUrl);
@@ -283,18 +307,24 @@ export const ExportModal: React.FC<ExportModalProps> = ({
       setErrorMsg(null);
       setCodecNote(null);
       setDownloadInfo(null);
-      setStatusLabel('Đang tải font chữ Google Fonts & khởi tạo render...');
+      setStatusLabel('Đang tải font chữ Google Fonts & tài nguyên...');
 
-      await preloadProjectFonts([
-        project.typography.fontFamily,
-        ...project.cues.flatMap((c) => [
-          c.customFont,
-          ...Object.values(c.wordStyles).map((w) => w?.fontFamily),
+      await Promise.all([
+        preloadProjectFonts([
+          project.typography.fontFamily,
+          ...project.cues.flatMap((c) => [
+            c.customFont,
+            ...Object.values(c.wordStyles).map((w) => w?.fontFamily),
+          ]),
         ]),
+        preloadWatermarkImage(project.watermark?.enabled ? project.watermark.imageDataUrl : null),
       ]);
       await document.fonts.ready;
+      checkNotAborted();
 
       const serverReady = await checkServerAvailable();
+      checkNotAborted();
+
       if (!serverReady) {
         if (format === 'mp4') {
           try {
@@ -314,6 +344,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
               onPhaseChange: (p) => setPhase(p),
               onProgress: (pct) => setProgress(pct),
               onStatus: (label) => setStatusLabel(label),
+              signal,
             });
 
             if (wcResult.supported) {
@@ -337,6 +368,9 @@ export const ExportModal: React.FC<ExportModalProps> = ({
               return;
             }
           } catch (wcErr) {
+            if (wcErr instanceof DOMException && wcErr.name === 'AbortError') {
+              throw wcErr;
+            }
             console.warn('WebCodecs MP4 fallback to FFmpeg.wasm:', wcErr);
           }
         }
@@ -358,6 +392,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
           onPhaseChange: (p) => setPhase(p),
           onProgress: (pct) => setProgress(pct),
           onStatus: (label) => setStatusLabel(label),
+          signal,
         });
 
         const blobUrl = URL.createObjectURL(result.blob);
@@ -452,6 +487,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
       const initRes = await fetch('/api/export/init', {
         method: 'POST',
         body: form,
+        signal,
       });
       if (!initRes.ok) {
         const errBody = await initRes.json().catch(() => ({}));
@@ -462,7 +498,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
       const { jobId, outputFilename } = await initRes.json();
 
       for (const item of largeUploads) {
-        await uploadLargeAsset(jobId, item.field, item.file, item.filename, item.label);
+        await uploadLargeAsset(jobId, item.field, item.file, item.filename, item.label, signal);
       }
 
       // Offscreen high-res canvas for exact frame-by-frame rendering
@@ -478,11 +514,13 @@ export const ExportModal: React.FC<ExportModalProps> = ({
 
       const flushBatch = async () => {
         if (batch.length === 0) return;
+        checkNotAborted();
         const packed = packFrameBatch(batch);
         const chunkRes = await fetch(`/api/export/${jobId}/frames`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/octet-stream' },
           body: packed.buffer as ArrayBuffer,
+          signal,
         });
         if (!chunkRes.ok) {
           const errBody = await chunkRes.json().catch(() => ({}));
@@ -496,6 +534,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
       };
 
       for (let i = 0; i < totalFrames; i++) {
+        checkNotAborted();
         const t = i / fps;
         const energy = sampleAudioEnergy(audioEnvelope, t);
 
@@ -503,6 +542,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
           width,
           height,
           timeSec: t,
+          totalDurationSec: renderDuration,
           project,
           audioEnergy: energy,
           forceTransparentBg: forceTransparentCanvas,
@@ -539,6 +579,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
         }
       }
 
+      checkNotAborted();
       // Trigger FFmpeg encode
       setPhase('encoding');
       setProgress(0);
@@ -548,7 +589,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
           : 'FFmpeg đang mã hóa MP4 H.264 + AAC...'
       );
 
-      const finRes = await fetch(`/api/export/${jobId}/finalize`, { method: 'POST' });
+      const finRes = await fetch(`/api/export/${jobId}/finalize`, { method: 'POST', signal });
       if (!finRes.ok) {
         const errBody = await finRes.json().catch(() => ({}));
         throw new Error(errBody.error || `Không thể bắt đầu mã hóa FFmpeg (HTTP ${finRes.status})`);
@@ -556,8 +597,13 @@ export const ExportModal: React.FC<ExportModalProps> = ({
 
       // Poll status until done
       while (true) {
+        checkNotAborted();
         await new Promise((r) => setTimeout(r, 600));
-        const statusRes = await fetch(`/api/export/${jobId}/status`, { cache: 'no-store' });
+        checkNotAborted();
+        const statusRes = await fetch(`/api/export/${jobId}/status`, {
+          cache: 'no-store',
+          signal,
+        });
         if (!statusRes.ok) {
           throw new Error(`Mất kết nối khi theo dõi tiến trình (HTTP ${statusRes.status})`);
         }
@@ -583,8 +629,19 @@ export const ExportModal: React.FC<ExportModalProps> = ({
         }
       }
     } catch (err) {
-      setPhase('error');
-      setErrorMsg(err instanceof Error ? err.message : 'Đã xảy ra lỗi không xác định');
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        setPhase('idle');
+        setProgress(0);
+        setStatusLabel('');
+        setErrorMsg('Đã hủy tiến trình xuất video.');
+      } else {
+        setPhase('error');
+        setErrorMsg(err instanceof Error ? err.message : 'Đã xảy ra lỗi không xác định');
+      }
+    } finally {
+      if (abortCtrlRef.current === ctrl) {
+        abortCtrlRef.current = null;
+      }
     }
   };
 
@@ -732,6 +789,22 @@ export const ExportModal: React.FC<ExportModalProps> = ({
             <span>{isAlphaExport ? 'Alpha RGBA' : 'Opaque Composite'}</span>
           </div>
 
+          {(resolution === '4k' || (fps === 60 && renderDuration > 35)) && (
+            <div className="px-3 py-2 bg-amber-500/10 border border-amber-400/25 rounded-md flex items-start gap-2 text-[11px] text-amber-200/90">
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-400" />
+              <span>
+                Độ phân giải 4K hoặc 60fps dài tiêu tốn nhiều RAM và thời gian xử lý. Trên điện
+                thoại nên ưu tiên <strong>1080p · 30fps</strong> để xuất nhanh và ổn định.
+              </span>
+            </div>
+          )}
+
+          {errorMsg && phase === 'idle' && (
+            <div className="px-3 py-2 bg-amber-500/10 border border-amber-400/25 rounded-md text-xs text-amber-200">
+              {errorMsg}
+            </div>
+          )}
+
           {/* Progress / Error / Download Result */}
           {phase !== 'idle' && (
             <div className="p-3.5 bg-[#171A21] border border-white/10 rounded-md space-y-2.5">
@@ -814,14 +887,23 @@ export const ExportModal: React.FC<ExportModalProps> = ({
         </div>
 
         <div className="px-5 py-3.5 border-t border-white/8 flex items-center justify-end gap-2.5 bg-[#111318]">
-          <button
-            type="button"
-            disabled={isBusy}
-            onClick={onClose}
-            className="px-4 py-2 text-xs font-medium text-[#A1A8B8] hover:text-white rounded-md cursor-pointer disabled:opacity-40"
-          >
-            Đóng
-          </button>
+          {isBusy ? (
+            <button
+              type="button"
+              onClick={handleCancelExport}
+              className="px-4 py-2 text-xs font-semibold text-red-400 hover:bg-red-500/10 border border-red-400/30 rounded-md cursor-pointer"
+            >
+              Hủy xuất
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 text-xs font-medium text-[#A1A8B8] hover:text-white rounded-md cursor-pointer"
+            >
+              Đóng
+            </button>
+          )}
           <button
             type="button"
             disabled={isBusy}

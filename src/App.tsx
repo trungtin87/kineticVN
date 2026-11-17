@@ -13,26 +13,88 @@ import {
   BackgroundConfig,
   EffectsConfig,
   MotionConfig,
+  ProgressBarConfig,
   StudioProject,
   SubtitleCue,
   TypographyConfig,
+  WatermarkConfig,
 } from './types/studio';
+import { preloadWatermarkImage } from './engine/kineticRenderer';
 import {
   buildAudioEnvelope,
   buildWaveformPeaks,
   sampleAudioEnergy,
 } from './utils/audioEnvelope';
 import { createDefaultProject, generateDemoAudioWavBlob } from './utils/demoProject';
-import { onFontLoaded, preloadProjectFonts } from './utils/googleFonts';
-import { parseSrt } from './utils/srtParser';
+import { ensureGoogleFontLoaded, onFontLoaded, preloadProjectFonts } from './utils/googleFonts';
+import { useProjectHistory } from './hooks/useProjectHistory';
+import {
+  clearAutosaveSnapshot,
+  exportProjectJsonBlob,
+  loadAutosaveSnapshot,
+  parseProjectJsonText,
+  saveAutosaveSnapshot,
+} from './utils/projectStorage';
+import {
+  exportSrt,
+  mergeCues,
+  parseSrt,
+  parseWordTimestampsJson,
+  splitCueAtTime,
+} from './utils/srtParser';
+import { StyleTemplate } from './utils/styleTemplates';
 
 type MobileSection = 'cues' | 'cueEdit' | 'style' | 'timeline';
 
+const DEFAULT_WATERMARK: WatermarkConfig = {
+  enabled: false,
+  imageDataUrl: null,
+  name: null,
+  position: 'top-right',
+  scale: 0.12,
+  opacity: 0.85,
+  marginPx: 36,
+};
+
+const DEFAULT_PROGRESS_BAR: ProgressBarConfig = {
+  enabled: false,
+  position: 'bottom',
+  style: 'glow',
+  heightPx: 8,
+  color: '#FF5A1F',
+  trackColor: 'rgba(255,255,255,0.18)',
+  opacity: 0.9,
+};
+
+function autoCoalesceKey(
+  prefix: string,
+  patch: Record<string, unknown>,
+  explicit?: string
+): string | undefined {
+  if (explicit) return explicit;
+  const keys = Object.keys(patch);
+  if (keys.length === 1) {
+    return `${prefix}:${keys[0]}`;
+  }
+  return undefined;
+}
+
 export default function App() {
-  const [project, setProject] = useState<StudioProject>(() => createDefaultProject());
+  const {
+    state: project,
+    setState: setProject,
+    resetHistory,
+    undo,
+    redo,
+    canUndo,
+    canRedo,
+  } = useProjectHistory<StudioProject>(() => createDefaultProject());
+
   const [selectedCueId, setSelectedCueId] = useState<string | null>('demo-1');
   const [activeTab, setActiveTab] = useState<InspectorTab>('cue');
   const [mobileSection, setMobileSection] = useState<MobileSection>('cues');
+  const [autosaveStatus, setAutosaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
+  const [statusError, setStatusError] = useState<string | null>(null);
 
   const [currentTimeSec, setCurrentTimeSec] = useState(0.95);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -65,6 +127,7 @@ export default function App() {
   const videoUrlRef = useRef<string | null>(null);
   const rafRef = useRef<number | null>(null);
   const lastFrameTsRef = useRef<number>(0);
+  const autosaveReadyRef = useRef(false);
 
   const loadAudioBlob = useCallback(async (blob: Blob, name: string | null) => {
     setAudioBlob(blob);
@@ -98,8 +161,36 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const demoWav = generateDemoAudioWavBlob(15.6);
-    loadAudioBlob(demoWav, null);
+    let cancelled = false;
+
+    const init = async () => {
+      const snap = await loadAutosaveSnapshot();
+      if (cancelled) return;
+
+      if (snap) {
+        resetHistory(snap.project);
+        setSelectedCueId(snap.project.cues[0]?.id ?? null);
+        if (snap.project.watermark?.imageDataUrl) {
+          preloadWatermarkImage(snap.project.watermark.imageDataUrl);
+        }
+        if (snap.audioBlob) {
+          await loadAudioBlob(snap.audioBlob, snap.audioName ?? null);
+        } else {
+          await loadAudioBlob(generateDemoAudioWavBlob(15.6), null);
+        }
+        if (!cancelled) {
+          setAutosaveStatus('saved');
+        }
+      } else {
+        await loadAudioBlob(generateDemoAudioWavBlob(15.6), null);
+      }
+
+      if (!cancelled) {
+        autosaveReadyRef.current = true;
+      }
+    };
+
+    init();
 
     document.fonts.ready.then(() => {
       setFontsTick((t) => t + 1);
@@ -110,12 +201,29 @@ export default function App() {
     });
 
     return () => {
+      cancelled = true;
       unsubFont();
       if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
       if (bgAudioUrlRef.current) URL.revokeObjectURL(bgAudioUrlRef.current);
       if (videoUrlRef.current) URL.revokeObjectURL(videoUrlRef.current);
     };
-  }, [loadAudioBlob]);
+  }, [loadAudioBlob, resetHistory]);
+
+  // Debounced IndexedDB Autosave
+  useEffect(() => {
+    if (!autosaveReadyRef.current) return;
+    setAutosaveStatus('saving');
+    const timer = window.setTimeout(async () => {
+      await saveAutosaveSnapshot({
+        project,
+        audioBlob,
+        audioName,
+        savedAt: Date.now(),
+      });
+      setAutosaveStatus('saved');
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [project, audioBlob, audioName]);
 
   useEffect(() => {
     const fontsToLoad: (string | null | undefined)[] = [project.typography.fontFamily];
@@ -467,6 +575,20 @@ export default function App() {
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
 
+      if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+        const key = e.key.toLowerCase();
+        if (key === 'z' && !e.shiftKey) {
+          e.preventDefault();
+          undo();
+          return;
+        }
+        if ((key === 'z' && e.shiftKey) || key === 'y') {
+          e.preventDefault();
+          redo();
+          return;
+        }
+      }
+
       if (e.code === 'Space') {
         e.preventDefault();
         setIsPlaying((p) => !p);
@@ -482,7 +604,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [currentTimeSec, seekTo]);
+  }, [currentTimeSec, seekTo, undo, redo]);
 
   const handleUploadSrtFile = async (file: File) => {
     const text = await file.text();
@@ -496,6 +618,15 @@ export default function App() {
 
   const handleImportSrtText = (srtText: string) => {
     const parsed = parseSrt(srtText);
+    if (parsed.length > 0) {
+      setProject((p) => ({ ...p, cues: parsed }));
+      setSelectedCueId(parsed[0].id);
+      seekTo(parsed[0].startSec + 0.05);
+    }
+  };
+
+  const handleImportWordJson = (jsonText: string) => {
+    const parsed = parseWordTimestampsJson(jsonText);
     if (parsed.length > 0) {
       setProject((p) => ({ ...p, cues: parsed }));
       setSelectedCueId(parsed[0].id);
@@ -594,11 +725,120 @@ export default function App() {
     }));
   };
 
-  const handleUpdateCue = (cueId: string, patch: Partial<SubtitleCue>) => {
+  const handleUpdateCue = (cueId: string, patch: Partial<SubtitleCue>, coalesceKey?: string) => {
+    const key = autoCoalesceKey(`cue-${cueId}`, patch as Record<string, unknown>, coalesceKey);
+    setProject(
+      (p) => ({
+        ...p,
+        cues: p.cues.map((c) => (c.id === cueId ? { ...c, ...patch } : c)),
+      }),
+      key ? { coalesceKey: key } : undefined
+    );
+  };
+
+  const handleSplitCue = (cueId: string) => {
+    const idx = project.cues.findIndex((c) => c.id === cueId);
+    if (idx < 0) return;
+    const res = splitCueAtTime(project.cues[idx], currentTimeSec);
+    if (!res) return;
+    const [first, second] = res;
+    setProject((p) => {
+      const nextCues = [...p.cues];
+      const currentIdx = nextCues.findIndex((c) => c.id === cueId);
+      if (currentIdx < 0) return p;
+      nextCues.splice(currentIdx, 1, first, second);
+      return {
+        ...p,
+        cues: nextCues.map((c, i) => ({ ...c, index: i + 1 })),
+      };
+    });
+    setSelectedCueId(second.id);
+  };
+
+  const handleMergeNextCue = (cueId: string) => {
+    const idx = project.cues.findIndex((c) => c.id === cueId);
+    if (idx < 0 || idx >= project.cues.length - 1) return;
+    const merged = mergeCues(project.cues[idx], project.cues[idx + 1]);
+    setProject((p) => {
+      const nextCues = [...p.cues];
+      const currentIdx = nextCues.findIndex((c) => c.id === cueId);
+      if (currentIdx < 0 || currentIdx >= nextCues.length - 1) return p;
+      nextCues.splice(currentIdx, 2, merged);
+      return {
+        ...p,
+        cues: nextCues.map((c, i) => ({ ...c, index: i + 1 })),
+      };
+    });
+    setSelectedCueId(merged.id);
+  };
+
+  const handleApplyTemplate = (tpl: StyleTemplate) => {
+    if (tpl.typography.fontFamily) {
+      ensureGoogleFontLoaded(tpl.typography.fontFamily);
+    }
     setProject((p) => ({
       ...p,
-      cues: p.cues.map((c) => (c.id === cueId ? { ...c, ...patch } : c)),
+      typography: { ...p.typography, ...tpl.typography },
+      motion: { ...p.motion, ...tpl.motion },
+      background: { ...p.background, ...tpl.background },
+      effects: {
+        vignette: 0.22,
+        filmGrain: 0.06,
+        scanlines: 0,
+        chromaticAberration: 0,
+        cameraFloat: false,
+        textCardOpacity: 0,
+        textCardColor: '#0B0C0F',
+        ...p.effects,
+        ...tpl.effects,
+      },
+      progressBar: tpl.progressBar
+        ? { ...DEFAULT_PROGRESS_BAR, ...p.progressBar, ...tpl.progressBar }
+        : p.progressBar,
     }));
+  };
+
+  const handleExportProjectJson = () => {
+    const { blob, filename } = exportProjectJsonBlob(project);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleImportProjectJson = async (file: File) => {
+    try {
+      const raw = await file.text();
+      const loaded = parseProjectJsonText(raw);
+      setProject(loaded);
+      setSelectedCueId(loaded.cues[0]?.id ?? null);
+      if (loaded.cues[0]) {
+        seekTo(loaded.cues[0].startSec + 0.05);
+      }
+      if (loaded.watermark?.imageDataUrl) {
+        preloadWatermarkImage(loaded.watermark.imageDataUrl);
+      }
+      setStatusError(null);
+    } catch (err) {
+      setStatusError(
+        err instanceof Error ? err.message : 'Không thể mở file dự án .kinetik.json.'
+      );
+      window.setTimeout(() => setStatusError(null), 4500);
+    }
+  };
+
+  const handleExportSrt = () => {
+    const content = exportSrt(project.cues);
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const baseName = (project.name || 'subtitles').trim().replace(/\s+/g, '_');
+    a.download = `${baseName}.srt`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   const handleAddCue = () => {
@@ -632,8 +872,9 @@ export default function App() {
 
   const handleResetDemo = () => {
     setIsPlaying(false);
+    clearAutosaveSnapshot();
     const demo = createDefaultProject();
-    setProject(demo);
+    resetHistory(demo);
     setSelectedCueId(demo.cues[0]?.id ?? null);
     const demoWav = generateDemoAudioWavBlob(15.6);
     loadAudioBlob(demoWav, null);
@@ -644,6 +885,12 @@ export default function App() {
     () => project.cues.find((c) => c.id === selectedCueId) || null,
     [project.cues, selectedCueId]
   );
+
+  const canMergeSelectedCue = useMemo(() => {
+    if (!selectedCueId) return false;
+    const idx = project.cues.findIndex((c) => c.id === selectedCueId);
+    return idx >= 0 && idx < project.cues.length - 1;
+  }, [project.cues, selectedCueId]);
 
   const audioEnergy = useMemo(
     () => sampleAudioEnergy(audioEnvelope, currentTimeSec) + fontsTick * 0,
@@ -666,13 +913,22 @@ export default function App() {
 
       <TopBar
         projectName={project.name}
-        onProjectNameChange={(name) => setProject((p) => ({ ...p, name }))}
+        onProjectNameChange={(name) =>
+          setProject((p) => ({ ...p, name }), { coalesceKey: 'project-name' })
+        }
         activeTab={activeTab}
         onTabChange={setActiveTab}
         aspectRatio={project.aspectRatio}
         onAspectRatioChange={(aspectRatio: AspectRatioId) =>
           setProject((p) => ({ ...p, aspectRatio }))
         }
+        canUndo={canUndo}
+        canRedo={canRedo}
+        onUndo={undo}
+        onRedo={redo}
+        autosaveStatus={autosaveStatus}
+        onExportProjectJson={handleExportProjectJson}
+        onImportProjectJson={handleImportProjectJson}
         onOpenImport={() => setImportOpen(true)}
         onResetDemo={handleResetDemo}
         onOpenExport={() => {
@@ -680,6 +936,19 @@ export default function App() {
           setExportOpen(true);
         }}
       />
+
+      {statusError && (
+        <div className="bg-red-500/15 border-b border-red-400/30 px-4 py-1.5 text-xs text-red-300 flex items-center justify-between">
+          <span>{statusError}</span>
+          <button
+            type="button"
+            onClick={() => setStatusError(null)}
+            className="text-red-200 hover:text-white underline cursor-pointer"
+          >
+            Đóng
+          </button>
+        </div>
+      )}
 
       {/* Responsive Studio Workspace: 3-column on desktop (lg+), stacked preview + tabbed drawer on mobile */}
       <main className="flex-1 flex flex-col lg:flex-row min-h-0 overflow-hidden">
@@ -703,6 +972,9 @@ export default function App() {
           }}
           onAddCue={handleAddCue}
           onDeleteCue={handleDeleteCue}
+          onSplitCue={handleSplitCue}
+          onMergeNextCue={handleMergeNextCue}
+          onExportSrt={handleExportSrt}
           onOpenImport={() => setImportOpen(true)}
           onQuickUploadSrt={handleUploadSrtFile}
           onQuickUploadAudio={handleUploadAudioFile}
@@ -730,13 +1002,16 @@ export default function App() {
           onToggleLoop={() => setIsLooping((l) => !l)}
           onToggleMute={() => setIsMuted((m) => !m)}
           onUpdateCuePosition={(cueId, posX, posY) =>
-            handleUpdateCue(cueId, { customPos: { x: posX, y: posY } })
+            handleUpdateCue(cueId, { customPos: { x: posX, y: posY } }, `drag-cue-${cueId}`)
           }
           onUpdateGlobalPosition={(posX, posY) =>
-            setProject((p) => ({
-              ...p,
-              typography: { ...p.typography, posX, posY },
-            }))
+            setProject(
+              (p) => ({
+                ...p,
+                typography: { ...p.typography, posX, posY },
+              }),
+              { coalesceKey: 'drag-global-pos' }
+            )
           }
         />
 
@@ -748,36 +1023,86 @@ export default function App() {
           motion={project.motion}
           background={project.background}
           effects={project.effects}
+          watermark={project.watermark ?? DEFAULT_WATERMARK}
+          progressBar={project.progressBar ?? DEFAULT_PROGRESS_BAR}
           bgVideoName={bgVideoName}
           bgVideoDurationSec={bgVideoDurationSec}
           totalDurationSec={totalDurationSec}
           bgAudioName={bgAudioName}
+          canMergeNextCue={canMergeSelectedCue}
           onUpdateCue={handleUpdateCue}
-          onUpdateTypography={(patch: Partial<TypographyConfig>) =>
-            setProject((p) => ({ ...p, typography: { ...p.typography, ...patch } }))
-          }
-          onUpdateMotion={(patch: Partial<MotionConfig>) =>
-            setProject((p) => ({ ...p, motion: { ...p.motion, ...patch } }))
-          }
-          onUpdateBackground={(patch: Partial<BackgroundConfig>) =>
-            setProject((p) => ({ ...p, background: { ...p.background, ...patch } }))
-          }
-          onUpdateEffects={(patch: Partial<EffectsConfig>) =>
-            setProject((p) => ({
-              ...p,
-              effects: {
-                vignette: 0.22,
-                filmGrain: 0.06,
-                scanlines: 0,
-                chromaticAberration: 0,
-                cameraFloat: false,
-                textCardOpacity: 0,
-                textCardColor: '#0B0C0F',
-                ...p.effects,
-                ...patch,
-              },
-            }))
-          }
+          onSplitCue={handleSplitCue}
+          onMergeNextCue={handleMergeNextCue}
+          onUpdateTypography={(patch: Partial<TypographyConfig>, coalesceKey?: string) => {
+            const key = autoCoalesceKey('typo', patch as Record<string, unknown>, coalesceKey);
+            setProject(
+              (p) => ({ ...p, typography: { ...p.typography, ...patch } }),
+              key ? { coalesceKey: key } : undefined
+            );
+          }}
+          onUpdateMotion={(patch: Partial<MotionConfig>, coalesceKey?: string) => {
+            const key = autoCoalesceKey('motion', patch as Record<string, unknown>, coalesceKey);
+            setProject(
+              (p) => ({ ...p, motion: { ...p.motion, ...patch } }),
+              key ? { coalesceKey: key } : undefined
+            );
+          }}
+          onUpdateBackground={(patch: Partial<BackgroundConfig>, coalesceKey?: string) => {
+            const key = autoCoalesceKey('bg', patch as Record<string, unknown>, coalesceKey);
+            setProject(
+              (p) => ({ ...p, background: { ...p.background, ...patch } }),
+              key ? { coalesceKey: key } : undefined
+            );
+          }}
+          onUpdateEffects={(patch: Partial<EffectsConfig>, coalesceKey?: string) => {
+            const key = autoCoalesceKey('fx', patch as Record<string, unknown>, coalesceKey);
+            setProject(
+              (p) => ({
+                ...p,
+                effects: {
+                  vignette: 0.22,
+                  filmGrain: 0.06,
+                  scanlines: 0,
+                  chromaticAberration: 0,
+                  cameraFloat: false,
+                  textCardOpacity: 0,
+                  textCardColor: '#0B0C0F',
+                  ...p.effects,
+                  ...patch,
+                },
+              }),
+              key ? { coalesceKey: key } : undefined
+            );
+          }}
+          onUpdateWatermark={(patch: Partial<WatermarkConfig>, coalesceKey?: string) => {
+            const key = autoCoalesceKey('wm', patch as Record<string, unknown>, coalesceKey);
+            setProject(
+              (p) => ({
+                ...p,
+                watermark: {
+                  ...DEFAULT_WATERMARK,
+                  ...p.watermark,
+                  ...patch,
+                },
+              }),
+              key ? { coalesceKey: key } : undefined
+            );
+          }}
+          onUpdateProgressBar={(patch: Partial<ProgressBarConfig>, coalesceKey?: string) => {
+            const key = autoCoalesceKey('pb', patch as Record<string, unknown>, coalesceKey);
+            setProject(
+              (p) => ({
+                ...p,
+                progressBar: {
+                  ...DEFAULT_PROGRESS_BAR,
+                  ...p.progressBar,
+                  ...patch,
+                },
+              }),
+              key ? { coalesceKey: key } : undefined
+            );
+          }}
+          onApplyTemplate={handleApplyTemplate}
           onUploadBgVideo={handleUploadBgVideo}
           onClearBgVideo={handleClearBgVideo}
           onUploadBgAudio={handleUploadBgAudio}
@@ -807,8 +1132,10 @@ export default function App() {
                 setActiveTab('cue');
               }}
               onUpdateCueTiming={(cueId, startSec, endSec) =>
-                handleUpdateCue(cueId, { startSec, endSec })
+                handleUpdateCue(cueId, { startSec, endSec }, `tl-drag-${cueId}`)
               }
+              onSplitCue={handleSplitCue}
+              onMergeNextCue={handleMergeNextCue}
               className="flex-1 h-auto"
             />
           </div>
@@ -831,8 +1158,10 @@ export default function App() {
           setActiveTab('cue');
         }}
         onUpdateCueTiming={(cueId, startSec, endSec) =>
-          handleUpdateCue(cueId, { startSec, endSec })
+          handleUpdateCue(cueId, { startSec, endSec }, `tl-drag-${cueId}`)
         }
+        onSplitCue={handleSplitCue}
+        onMergeNextCue={handleMergeNextCue}
         className="hidden lg:flex"
       />
 
@@ -894,6 +1223,7 @@ export default function App() {
           cues={project.cues}
           onClose={() => setImportOpen(false)}
           onImportSrtText={handleImportSrtText}
+          onImportWordJson={handleImportWordJson}
           onUploadAudio={handleUploadAudioFile}
         />
       )}

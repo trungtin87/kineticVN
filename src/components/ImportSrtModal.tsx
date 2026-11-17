@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Download, FileText, Music, X } from 'lucide-react';
+import { Braces, Download, FileText, Music, X } from 'lucide-react';
 import { exportSrt } from '../utils/srtParser';
 import { SubtitleCue } from '../types/studio';
 
@@ -8,6 +8,7 @@ interface ImportSrtModalProps {
   cues: SubtitleCue[];
   onClose: () => void;
   onImportSrtText: (srtText: string) => void;
+  onImportWordJson?: (jsonText: string) => void;
   onUploadAudio: (file: File) => void;
 }
 
@@ -16,9 +17,11 @@ export const ImportSrtModal: React.FC<ImportSrtModalProps> = ({
   cues,
   onClose,
   onImportSrtText,
+  onImportWordJson,
   onUploadAudio,
 }) => {
   const [text, setText] = useState(() => exportSrt(cues));
+  const [jsonError, setJsonError] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
@@ -38,7 +41,7 @@ export const ImportSrtModal: React.FC<ImportSrtModalProps> = ({
       <div className="w-full max-w-2xl bg-[#14171F] border border-white/12 rounded-lg overflow-hidden shadow-2xl">
         <div className="px-5 py-3.5 border-b border-white/8 flex items-center justify-between">
           <h3 className="font-display text-sm font-semibold text-[#F4F5F7]">
-            Nhập / Chỉnh sửa mã nguồn SRT &amp; Audio
+            Nhập / Chỉnh sửa mã nguồn SRT, Word JSON &amp; Audio
           </h3>
           <button
             type="button"
@@ -50,10 +53,10 @@ export const ImportSrtModal: React.FC<ImportSrtModalProps> = ({
         </div>
 
         <div className="p-5 space-y-4">
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
             <label className="flex items-center justify-center gap-2 py-2.5 px-3 bg-[#1A1E28] hover:bg-[#222735] border border-white/10 rounded-md cursor-pointer text-xs font-medium text-[#E2E5EC]">
               <FileText className="w-4 h-4 text-[#FF5A1F]" />
-              <span>Chọn file .SRT từ máy</span>
+              <span>Chọn file .SRT</span>
               <input
                 type="file"
                 accept=".srt,.txt"
@@ -63,15 +66,44 @@ export const ImportSrtModal: React.FC<ImportSrtModalProps> = ({
                   if (f) {
                     const raw = await f.text();
                     setText(raw);
+                    setJsonError(null);
                   }
                   e.target.value = '';
                 }}
               />
             </label>
 
+            {onImportWordJson && (
+              <label className="flex items-center justify-center gap-2 py-2.5 px-3 bg-[#1A1E28] hover:bg-[#222735] border border-white/10 rounded-md cursor-pointer text-xs font-medium text-[#E2E5EC]">
+                <Braces className="w-4 h-4 text-[#34D399]" />
+                <span>JSON Word-Timing</span>
+                <input
+                  type="file"
+                  accept=".json,application/json"
+                  className="hidden"
+                  onChange={async (e) => {
+                    const f = e.target.files?.[0];
+                    if (f) {
+                      try {
+                        setJsonError(null);
+                        const raw = await f.text();
+                        onImportWordJson(raw);
+                        onClose();
+                      } catch (err) {
+                        setJsonError(
+                          err instanceof Error ? err.message : 'Không thể đọc JSON word timestamps'
+                        );
+                      }
+                    }
+                    e.target.value = '';
+                  }}
+                />
+              </label>
+            )}
+
             <label className="flex items-center justify-center gap-2 py-2.5 px-3 bg-[#1A1E28] hover:bg-[#222735] border border-white/10 rounded-md cursor-pointer text-xs font-medium text-[#E2E5EC]">
               <Music className="w-4 h-4 text-[#38BDF8]" />
-              <span>Chọn file Audio (.mp3, .wav, .m4a)</span>
+              <span>Chọn Audio</span>
               <input
                 type="file"
                 accept="audio/*,.mp3,.wav,.m4a,.aac,.ogg,.flac"
@@ -85,11 +117,17 @@ export const ImportSrtModal: React.FC<ImportSrtModalProps> = ({
             </label>
           </div>
 
+          {jsonError && (
+            <p className="text-xs text-red-400 bg-red-500/10 border border-red-400/25 rounded px-3 py-2">
+              {jsonError}
+            </p>
+          )}
+
           <div className="space-y-1.5">
-            <div className="flex items-center justify-between text-xs text-[#9BA3B4]">
+            <div className="flex items-center justify-between text-xs text-[#9BA3B4] gap-2 flex-wrap">
               <span>
-                Mẹo: Bọc từ trong dấu ngoặc vuông <code className="text-[#FF5A1F]">[nhấn mạnh]</code>{' '}
-                để tự động tô màu nhấn khi nhập.
+                Mẹo: Bọc từ trong ngoặc vuông <code className="text-[#FF5A1F]">[nhấn mạnh]</code>{' '}
+                hoặc nhập JSON chuẩn Whisper (<code className="text-[#34D399]">words[]</code>).
               </span>
               <button
                 type="button"
@@ -101,7 +139,7 @@ export const ImportSrtModal: React.FC<ImportSrtModalProps> = ({
               </button>
             </div>
             <textarea
-              rows={11}
+              rows={10}
               value={text}
               onChange={(e) => setText(e.target.value)}
               className="w-full bg-[#0D0F14] border border-white/10 focus:border-[#FF5A1F] rounded-md p-3 text-xs font-mono-tabular text-[#E2E5EC] focus:outline-none leading-relaxed"
@@ -133,3 +171,4 @@ export const ImportSrtModal: React.FC<ImportSrtModalProps> = ({
     </div>
   );
 };
+

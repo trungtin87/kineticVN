@@ -18,6 +18,7 @@ export interface WebCodecsMp4Params {
   onPhaseChange: (phase: 'rendering' | 'encoding') => void;
   onProgress: (pct: number) => void;
   onStatus: (label: string) => void;
+  signal?: AbortSignal;
 }
 
 export type WebCodecsMp4Outcome =
@@ -301,12 +302,21 @@ export async function exportMp4WithWebCodecs(
     onPhaseChange,
     onProgress,
     onStatus,
+    signal,
   } = params;
+
+  const assertNotAborted = () => {
+    if (signal?.aborted) {
+      throw new DOMException('Đã hủy xuất video.', 'AbortError');
+    }
+  };
+  assertNotAborted();
 
   const videoSupport = await findSupportedVideoConfig(width, height, fps);
   if (!videoSupport) {
     return { supported: false };
   }
+  assertNotAborted();
 
   onPhaseChange('rendering');
   onProgress(0);
@@ -391,10 +401,12 @@ export async function exportMp4WithWebCodecs(
     const keyInterval = Math.max(1, fps * 2);
 
     for (let i = 0; i < totalFrames; i++) {
+      assertNotAborted();
       if (encoderError) throw encoderError;
 
       while (videoEncoder.encodeQueueSize > 6) {
         await new Promise((r) => setTimeout(r, 4));
+        assertNotAborted();
         if (encoderError) throw encoderError;
       }
 
@@ -412,6 +424,7 @@ export async function exportMp4WithWebCodecs(
         width,
         height,
         timeSec: t,
+        totalDurationSec: renderDuration,
         project,
         audioEnergy: energy,
         bgVideo: bgVideoObj?.video ?? null,
@@ -456,6 +469,7 @@ export async function exportMp4WithWebCodecs(
       const CHUNK_SAMPLES = 4096;
 
       for (let start = 0; start < totalSamples; start += CHUNK_SAMPLES) {
+        assertNotAborted();
         if (encoderError) throw encoderError;
         const count = Math.min(CHUNK_SAMPLES, totalSamples - start);
         const planar = new Float32Array(count * 2);

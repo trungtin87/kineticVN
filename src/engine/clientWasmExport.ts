@@ -145,6 +145,7 @@ export interface BrowserWasmExportParams {
   onPhaseChange: (phase: 'rendering' | 'encoding') => void;
   onProgress: (pct: number) => void;
   onStatus: (label: string) => void;
+  signal?: AbortSignal;
 }
 
 export interface BrowserWasmExportResult {
@@ -172,12 +173,21 @@ export async function exportWithBrowserWasm(
     onPhaseChange,
     onProgress,
     onStatus,
+    signal,
   } = params;
+
+  const assertNotAborted = () => {
+    if (signal?.aborted) {
+      throw new DOMException('Đã hủy xuất video.', 'AbortError');
+    }
+  };
+  assertNotAborted();
 
   onPhaseChange('rendering');
   onProgress(0);
 
   const ffmpeg = await loadBrowserFFmpeg(onStatus);
+  assertNotAborted();
   const { fetchFile } = await import('@ffmpeg/util');
 
   const isAlphaTransparent = !includeBackground;
@@ -205,6 +215,7 @@ export async function exportWithBrowserWasm(
     if (!ctx) throw new Error('Không khởi tạo được Canvas 2D');
 
     for (let i = 0; i < totalFrames; i++) {
+      assertNotAborted();
       const t = i / fps;
       const energy = sampleAudioEnergy(audioEnvelope, t);
 
@@ -219,6 +230,7 @@ export async function exportWithBrowserWasm(
         width,
         height,
         timeSec: t,
+        totalDurationSec: renderDuration,
         project,
         audioEnergy: energy,
         bgVideo: bgVideoObj?.video ?? null,
@@ -246,6 +258,7 @@ export async function exportWithBrowserWasm(
       bgVideoObj = null;
     }
 
+    assertNotAborted();
     onPhaseChange('encoding');
     onProgress(5);
     onStatus(

@@ -15,6 +15,7 @@ export interface RenderOptions {
   width: number;
   height: number;
   timeSec: number;
+  totalDurationSec?: number;
   project: StudioProject;
   audioEnergy: number;
   bgVideo?: HTMLVideoElement | null;
@@ -23,6 +24,7 @@ export interface RenderOptions {
   forceTransparentBg?: boolean;
   skipPostFx?: boolean;
   showSafeGuides?: boolean;
+  showSocialSafeZones?: boolean;
   selectedCueId?: string | null;
 }
 
@@ -32,6 +34,65 @@ export interface RenderedCueBounds {
   y: number;
   width: number;
   height: number;
+}
+
+const watermarkImageCache = new Map<string, HTMLImageElement>();
+let grainTileCanvas: HTMLCanvasElement | null = null;
+
+function getGrainTileCanvas(): HTMLCanvasElement | null {
+  if (typeof document === 'undefined') return null;
+  if (grainTileCanvas) return grainTileCanvas;
+  const tile = document.createElement('canvas');
+  tile.width = 256;
+  tile.height = 256;
+  const tctx = tile.getContext('2d');
+  if (!tctx) return null;
+  const img = tctx.createImageData(256, 256);
+  const d = img.data;
+  for (let i = 0; i < 256 * 256; i++) {
+    const v = hashFloat(i * 1.37 + 19.3);
+    const offset = i * 4;
+    const isBright = v > 0.5;
+    const lum = isBright ? 255 : 0;
+    const alpha = Math.round(Math.abs(v - 0.5) * 2 * 110);
+    d[offset] = lum;
+    d[offset + 1] = lum;
+    d[offset + 2] = lum;
+    d[offset + 3] = alpha;
+  }
+  tctx.putImageData(img, 0, 0);
+  grainTileCanvas = tile;
+  return grainTileCanvas;
+}
+
+export function preloadWatermarkImage(dataUrl: string | null | undefined): Promise<void> {
+  if (!dataUrl || typeof Image === 'undefined') return Promise.resolve();
+  const cached = watermarkImageCache.get(dataUrl);
+  if (cached && cached.complete && cached.naturalWidth > 0) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      watermarkImageCache.set(dataUrl, img);
+      resolve();
+    };
+    img.onerror = () => resolve();
+    img.src = dataUrl;
+  });
+}
+
+function getWatermarkImageSync(dataUrl: string): HTMLImageElement | null {
+  const existing = watermarkImageCache.get(dataUrl);
+  if (existing) {
+    return existing.complete && existing.naturalWidth > 0 ? existing : null;
+  }
+  if (typeof Image !== 'undefined') {
+    const img = new Image();
+    img.src = dataUrl;
+    watermarkImageCache.set(dataUrl, img);
+  }
+  return null;
 }
 
 function clamp01(v: number): number {
@@ -819,6 +880,7 @@ export function renderKineticScene(
     width,
     height,
     timeSec,
+    totalDurationSec,
     project,
     audioEnergy,
     bgVideo,
@@ -827,6 +889,7 @@ export function renderKineticScene(
     forceTransparentBg,
     skipPostFx,
     showSafeGuides,
+    showSocialSafeZones,
     selectedCueId,
   } = options;
 
@@ -970,11 +1033,20 @@ export function renderKineticScene(
         const word = line.words[wIdx];
         const wordCenterX = cursorX + word.width / 2;
 
-        // Per-word normalized stagger timing
+        // Per-word timing: use exact wordTimings if available, else normalized stagger
+        const explicitWordTiming =
+          activeCue.wordTimings && word.wordIndex < activeCue.wordTimings.length
+            ? activeCue.wordTimings[word.wordIndex]
+            : null;
         const staggerSpan = Math.min(cueDur * 0.65, (0.55 * motion.staggerAmount) / motion.inSpeed);
-        const wordDelay =
-          totalWords > 1 ? (word.wordIndex / (totalWords - 1)) * staggerSpan : 0;
-        const wordAnimDur = Math.max(0.18, 0.36 / motion.inSpeed);
+        const wordDelay = explicitWordTiming
+          ? Math.max(0, explicitWordTiming.startSec - activeCue.startSec)
+          : totalWords > 1
+          ? (word.wordIndex / (totalWords - 1)) * staggerSpan
+          : 0;
+        const wordAnimDur = explicitWordTiming
+          ? Math.max(0.14, Math.min(0.4, (explicitWordTiming.endSec - explicitWordTiming.startSec) / motion.inSpeed))
+          : Math.max(0.18, 0.36 / motion.inSpeed);
         const rawProgress = clamp01((elapsed - wordDelay) / wordAnimDur);
 
         // Compute preset-specific transform & styling
@@ -1004,7 +1076,9 @@ export function renderKineticScene(
           alpha *= clamp01(rawProgress * 2.2);
           clipLine = true;
         } else if (preset === 'karaokeSweep') {
-          const wordActiveAt = (word.wordIndex / Math.max(1, totalWords)) * (cueDur * 0.82);
+          const wordActiveAt = explicitWordTiming
+            ? Math.max(0, explicitWordTiming.startSec - activeCue.startSec)
+            : (word.wordIndex / Math.max(1, totalWords)) * (cueDur * 0.82);
           isKaraokeActive = elapsed >= wordActiveAt;
           const activeElapsed = elapsed - wordActiveAt;
           if (isKaraokeActive) {
@@ -1025,7 +1099,19 @@ export function renderKineticScene(
           const wordStartChar = charsSoFar;
           const wordLen = word.displayText.length;
           charsSoFar += wordLen;
-          if (visibleCharCount <= wordStartChar) {
+          if (explicitWordTiming) {
+            const wp = clamp01(
+              (timeSec - explicitWordTiming.startSec) /
+                Math.max(0.08, explicitWordTiming.endSec - explicitWordTiming.startSec)
+            );
+            if (timeSec < explicitWordTiming.startSec) {
+              drawTextStr = '';
+              alpha = 0;
+            } else {
+              const charsShown = Math.max(1, Math.ceil(wp * wordLen));
+              drawTextStr = word.displayText.slice(0, charsShown);
+            }
+          } else if (visibleCharCount <= wordStartChar) {
             drawTextStr = '';
             alpha = 0;
           } else if (visibleCharCount < wordStartChar + wordLen) {
@@ -1376,7 +1462,7 @@ export function renderKineticScene(
     ctx.restore();
   }
 
-  // 2.5 Global Post-FX (Vignette, Scanlines, Film Grain) — skipped on transparent alpha export
+  // 2.5 Global Post-FX (Vignette, Scanlines, Film Grain) + Branding Overlays
   const shouldSkipPostFx = skipPostFx ?? forceTransparentBg;
   if (!shouldSkipPostFx) {
     if (fx.scanlines > 0.01) {
@@ -1402,16 +1488,99 @@ export function renderKineticScene(
     }
 
     if (fx.filmGrain > 0.01) {
-      const speckCount = Math.round(180 * clamp01(fx.filmGrain * 2));
-      const frameStep = Math.floor(timeSec * 24);
-      const sz = Math.max(1.5, Math.min(width, height) / 680);
-      for (let i = 0; i < speckCount; i++) {
-        const sx = hashFloat(i * 2.3 + frameStep * 7.1) * width;
-        const sy = hashFloat(i * 5.7 + frameStep * 13.7) * height;
-        const a = hashFloat(i + frameStep * 1.9) * fx.filmGrain * 0.38;
-        ctx.fillStyle = i % 2 === 0 ? `rgba(255,255,255,${a.toFixed(3)})` : `rgba(0,0,0,${a.toFixed(3)})`;
-        ctx.fillRect(sx, sy, sz, sz);
+      const tile = getGrainTileCanvas();
+      if (tile) {
+        const frameStep = Math.floor(timeSec * 24);
+        const shiftX = Math.floor(hashFloat(frameStep * 3.17) * 256);
+        const shiftY = Math.floor(hashFloat(frameStep * 7.91) * 256);
+        ctx.save();
+        ctx.globalAlpha = clamp01(fx.filmGrain * 1.45);
+        const pat = ctx.createPattern(tile, 'repeat');
+        if (pat) {
+          ctx.translate(-shiftX, -shiftY);
+          ctx.fillStyle = pat;
+          ctx.fillRect(shiftX, shiftY, width + 256, height + 256);
+        }
+        ctx.restore();
       }
+    }
+
+    // Branding: Watermark / Logo
+    const wm = project.watermark;
+    if (wm?.enabled && wm.imageDataUrl) {
+      const img = getWatermarkImageSync(wm.imageDataUrl);
+      if (img) {
+        const shortEdge = Math.min(width, height);
+        const targetW = Math.max(24, shortEdge * clamp01(wm.scale || 0.12));
+        const ratio = img.naturalHeight / Math.max(1, img.naturalWidth);
+        const targetH = targetW * ratio;
+        const margin = (wm.marginPx ?? 36) * (shortEdge / 1080);
+
+        let wx = margin;
+        let wy = margin;
+        if (wm.position === 'top-right') {
+          wx = width - targetW - margin;
+          wy = margin;
+        } else if (wm.position === 'bottom-left') {
+          wx = margin;
+          wy = height - targetH - margin;
+        } else if (wm.position === 'bottom-right') {
+          wx = width - targetW - margin;
+          wy = height - targetH - margin;
+        }
+
+        ctx.save();
+        ctx.globalAlpha = clamp01(wm.opacity ?? 0.85);
+        ctx.drawImage(img, wx, wy, targetW, targetH);
+        ctx.restore();
+      }
+    }
+
+    // Branding: Video Progress Bar
+    const pb = project.progressBar;
+    if (pb?.enabled) {
+      const fallbackDur = project.cues.reduce((m, c) => Math.max(m, c.endSec), 2);
+      const effDur = Math.max(0.5, totalDurationSec || fallbackDur);
+      const pct = clamp01(timeSec / effDur);
+      const shortEdge = Math.min(width, height);
+      const barH = Math.max(3, (pb.heightPx || 8) * (shortEdge / 1080));
+      const padX = pb.style === 'pill' ? shortEdge * 0.04 : 0;
+      const barW = width - padX * 2;
+      const y =
+        pb.position === 'top'
+          ? pb.style === 'pill'
+            ? shortEdge * 0.025
+            : 0
+          : pb.style === 'pill'
+          ? height - barH - shortEdge * 0.025
+          : height - barH;
+      const radius = pb.style === 'pill' ? barH / 2 : 0;
+
+      ctx.save();
+      ctx.globalAlpha = clamp01(pb.opacity ?? 0.92);
+      ctx.fillStyle = pb.trackColor || 'rgba(255,255,255,0.18)';
+      if (radius > 0) {
+        drawRoundedRect(ctx, padX, y, barW, barH, radius);
+        ctx.fill();
+      } else {
+        ctx.fillRect(padX, y, barW, barH);
+      }
+
+      const fillW = Math.max(0, barW * pct);
+      if (fillW > 0.5) {
+        if (pb.style === 'glow') {
+          ctx.shadowColor = pb.color || '#FF5A1F';
+          ctx.shadowBlur = barH * 2.2;
+        }
+        ctx.fillStyle = pb.color || '#FF5A1F';
+        if (radius > 0) {
+          drawRoundedRect(ctx, padX, y, fillW, barH, radius);
+          ctx.fill();
+        } else {
+          ctx.fillRect(padX, y, fillW, barH);
+        }
+      }
+      ctx.restore();
     }
   }
 
@@ -1434,6 +1603,38 @@ export function renderKineticScene(
     ctx.moveTo(0, height / 2);
     ctx.lineTo(width, height / 2);
     ctx.stroke();
+
+    // TikTok / Reels / Shorts Safe Zone Overlay (for vertical / 9:16 & 4:5)
+    if (showSocialSafeZones && width < height) {
+      const topZoneH = height * 0.12;
+      const botZoneH = height * 0.24;
+      const rightColW = width * 0.16;
+
+      ctx.setLineDash([]);
+      ctx.fillStyle = 'rgba(244, 63, 94, 0.12)';
+      // Top UI bar (Following / For You / Search)
+      ctx.fillRect(0, 0, width, topZoneH);
+      // Bottom caption / audio marquee area
+      ctx.fillRect(0, height - botZoneH, width, botZoneH);
+      // Right vertical action icons stack (Like, Comment, Share)
+      ctx.fillRect(width - rightColW, height * 0.42, rightColW, height - height * 0.42 - botZoneH);
+
+      ctx.strokeStyle = 'rgba(244, 63, 94, 0.5)';
+      ctx.setLineDash([4, 4]);
+      ctx.strokeRect(
+        width * 0.05,
+        topZoneH,
+        width - rightColW - width * 0.05,
+        height - topZoneH - botZoneH
+      );
+
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.72)';
+      ctx.font = `600 ${Math.max(11, Math.round(width * 0.024))}px sans-serif`;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      ctx.fillText('Vùng an toàn TikTok / Reels', width * 0.06, topZoneH + 6);
+    }
+
     ctx.restore();
   }
 

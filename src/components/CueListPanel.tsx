@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { FileText, Music, Plus, Search, Trash2, Upload } from 'lucide-react';
+import { Combine, Download, FileText, Music, Plus, Scissors, Search, Trash2, Upload } from 'lucide-react';
 import { SubtitleCue } from '../types/studio';
 import { formatTimecodeShort, tokenizeCueText } from '../utils/srtParser';
 
@@ -13,6 +13,9 @@ interface CueListPanelProps {
   onSelectCue: (cueId: string, seek?: boolean) => void;
   onAddCue: () => void;
   onDeleteCue: (cueId: string) => void;
+  onSplitCue?: (cueId: string) => void;
+  onMergeNextCue?: (cueId: string) => void;
+  onExportSrt?: () => void;
   onOpenImport: () => void;
   onQuickUploadSrt: (file: File) => void;
   onQuickUploadAudio: (file: File) => void;
@@ -29,6 +32,9 @@ export const CueListPanel: React.FC<CueListPanelProps> = ({
   onSelectCue,
   onAddCue,
   onDeleteCue,
+  onSplitCue,
+  onMergeNextCue,
+  onExportSrt,
   onOpenImport,
   onQuickUploadSrt,
   onQuickUploadAudio,
@@ -48,15 +54,28 @@ export const CueListPanel: React.FC<CueListPanelProps> = ({
     >
       {/* Media Sources Strip */}
       <div className="p-3.5 border-b border-white/8 space-y-2.5 shrink-0">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-2">
           <h2 className="text-xs font-semibold text-[#E2E5EC]">Nguồn dữ liệu</h2>
-          <button
-            type="button"
-            onClick={onOpenImport}
-            className="text-xs font-medium text-[#FF5A1F] hover:text-[#FF7847] transition-colors cursor-pointer whitespace-nowrap"
-          >
-            Dán SRT trực tiếp
-          </button>
+          <div className="flex items-center gap-2.5">
+            {onExportSrt && cues.length > 0 && (
+              <button
+                type="button"
+                onClick={onExportSrt}
+                title="Tải xuống file phụ đề .SRT hiện tại"
+                className="text-[11px] font-medium text-[#38BDF8] hover:text-[#7DD3FC] transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1"
+              >
+                <Download className="w-3 h-3" />
+                <span>Xuất .SRT</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onOpenImport}
+              className="text-xs font-medium text-[#FF5A1F] hover:text-[#FF7847] transition-colors cursor-pointer whitespace-nowrap"
+            >
+              Dán SRT trực tiếp
+            </button>
+          </div>
         </div>
 
         <div className="grid grid-cols-2 gap-2">
@@ -136,10 +155,14 @@ export const CueListPanel: React.FC<CueListPanelProps> = ({
             </p>
           </div>
         ) : (
-          filteredCues.map((cue, i) => {
+          filteredCues.map((cue) => {
+            const realIndex = cues.findIndex((c) => c.id === cue.id);
             const isSelected = cue.id === selectedCueId;
             const isActiveAtPlayhead =
               currentTimeSec >= cue.startSec && currentTimeSec <= cue.endSec;
+            const canSplit = cue.endSec - cue.startSec >= 0.35;
+            const hasNext = realIndex >= 0 && realIndex < cues.length - 1;
+            const hasWordTimings = Boolean(cue.wordTimings && cue.wordTimings.length > 0);
             const { lines } = tokenizeCueText(cue.text);
 
             return (
@@ -163,7 +186,7 @@ export const CueListPanel: React.FC<CueListPanelProps> = ({
                 }`}
               >
                 <div className="flex items-center justify-between text-[11px] mb-1.5">
-                  <div className="flex items-center gap-1.5 font-mono-tabular">
+                  <div className="flex items-center gap-1.5 font-mono-tabular min-w-0">
                     <span
                       className={`font-semibold ${
                         isSelected
@@ -173,25 +196,65 @@ export const CueListPanel: React.FC<CueListPanelProps> = ({
                           : 'text-[#7C8496]'
                       }`}
                     >
-                      #{String(i + 1).padStart(2, '0')}
+                      #{String((realIndex >= 0 ? realIndex : 0) + 1).padStart(2, '0')}
                     </span>
                     <span className="text-[#5B6270]">·</span>
-                    <span className="text-[#9BA3B4]">
+                    <span className="text-[#9BA3B4] truncate">
                       {formatTimecodeShort(cue.startSec)} → {formatTimecodeShort(cue.endSec)}
                     </span>
+                    {hasWordTimings && (
+                      <span
+                        title="Có timing chi tiết từng từ"
+                        className="px-1 py-px text-[9px] font-semibold bg-[#34D399]/15 text-[#34D399] border border-[#34D399]/30 rounded"
+                      >
+                        WT
+                      </span>
+                    )}
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onDeleteCue(cue.id);
-                    }}
-                    title="Xóa câu"
-                    className="opacity-0 group-hover:opacity-100 p-1 text-[#7C8496] hover:text-red-400 transition-opacity cursor-pointer"
+                  <div
+                    className={`flex items-center gap-0.5 transition-opacity shrink-0 ${
+                      isSelected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                    }`}
                   >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+                    {onSplitCue && canSplit && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onSplitCue(cue.id);
+                        }}
+                        title="Tách câu tại con trỏ / chia đôi"
+                        className="p-1 text-[#7C8496] hover:text-[#FF5A1F] cursor-pointer"
+                      >
+                        <Scissors className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                    {onMergeNextCue && hasNext && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onMergeNextCue(cue.id);
+                        }}
+                        title="Gộp với câu tiếp theo"
+                        className="p-1 text-[#7C8496] hover:text-[#38BDF8] cursor-pointer"
+                      >
+                        <Combine className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onDeleteCue(cue.id);
+                      }}
+                      title="Xóa câu"
+                      className="p-1 text-[#7C8496] hover:text-red-400 cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
 
                 <div className="text-xs leading-relaxed text-[#E7E9EE] space-y-0.5">
