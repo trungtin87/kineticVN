@@ -124,10 +124,9 @@ async function mixAudioTracksForExport(params: {
   const voiceActive = Boolean(audioFile && project.background.voiceVolume > 0.005);
   const customBgActive = Boolean(
     includeBackground &&
-      project.background.mode === 'video' &&
-      project.background.bgAudioSource === 'custom' &&
       bgAudioFile &&
-      project.background.bgAudioVolume > 0.005
+      project.background.bgAudioVolume > 0.005 &&
+      (project.background.mode !== 'video' || project.background.bgAudioSource === 'custom')
   );
   const videoBgActive = Boolean(
     includeBackground &&

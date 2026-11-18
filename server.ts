@@ -590,11 +590,11 @@ with zipfile.ZipFile(out_zip, 'w', zipfile.ZIP_DEFLATED) as zf:
       args.push('-i', job.audioPath);
     }
 
-    // Optional Custom Replacement Background Audio Input (looped to match video duration)
+    // Optional Custom / Soundscape Background Audio Input (looped to match video duration)
     let customBgAudioInputIdx = -1;
     if (
-      useServerBgVideo &&
-      job.bgAudioSource === 'custom' &&
+      job.includeBackground &&
+      (!useServerBgVideo || job.bgAudioSource === 'custom') &&
       job.bgAudioPath &&
       job.bgAudioVolume > 0.005 &&
       (await probeHasAudio(job.bgAudioPath))

@@ -186,6 +186,12 @@ export interface ProgressBarConfig {
   opacity: number; // 0.2..1
 }
 
+export interface SoundscapeConfig {
+  enabled: boolean;
+  presetId?: string | null;
+  layers: Record<string, number>;
+}
+
 export interface StudioProject {
   name: string;
   aspectRatio: AspectRatioId;
@@ -196,6 +202,7 @@ export interface StudioProject {
   effects?: EffectsConfig;
   watermark?: WatermarkConfig;
   progressBar?: ProgressBarConfig;
+  soundscape?: SoundscapeConfig;
 }
 
 export type ExportFormat = 'mp4' | 'prores4444';

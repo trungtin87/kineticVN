@@ -288,13 +288,15 @@ export async function exportWithBrowserWasm(
       voiceInputIdx = nextInputIdx++;
     }
 
-    if (
-      hasVideoBg &&
-      project.background.bgAudioSource === 'custom' &&
-      bgAudioFile &&
-      project.background.bgAudioVolume > 0.005
-    ) {
-      const bgAudioName = `bgaudio${getSafeExt(bgAudioFile, '.mp3')}`;
+    const customBgActive = Boolean(
+      includeBackground &&
+        bgAudioFile &&
+        project.background.bgAudioVolume > 0.005 &&
+        (project.background.mode !== 'video' || project.background.bgAudioSource === 'custom')
+    );
+
+    if (customBgActive && bgAudioFile) {
+      const bgAudioName = `bgaudio${getSafeExt(bgAudioFile, '.wav')}`;
       await ffmpeg.writeFile(bgAudioName, await fetchFile(bgAudioFile));
       createdFiles.push(bgAudioName);
       args.push('-stream_loop', '-1', '-i', bgAudioName);

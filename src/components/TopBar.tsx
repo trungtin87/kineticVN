@@ -54,11 +54,18 @@ export const TopBar: React.FC<TopBarProps> = ({
 }) => {
   return (
     <header className="h-12 lg:h-14 px-3 lg:px-5 bg-[#111318] border-b border-white/8 flex items-center justify-between gap-2 lg:gap-6 shrink-0">
-      {/* Zone 1: Single-line Brand Wordmark & Project Name + Autosave */}
+      {/* Zone 1: Single-line Brand Logo, Wordmark & Project Name + Autosave */}
       <div className="flex items-center gap-2.5 min-w-0 shrink-0">
-        <span className="font-display text-sm lg:text-base font-bold tracking-tight text-[#F4F5F7] whitespace-nowrap shrink-0">
-          Kinetik Studio
-        </span>
+        <div className="flex items-center gap-2 shrink-0">
+          <img
+            src={`${import.meta.env.BASE_URL}assets/aistudio/file_00000000bf188211bf463903466f8fc8_93b63c53.png`}
+            alt="Logo Hoạt Tự"
+            className="w-8 h-8 lg:w-9 lg:h-9 rounded-full object-cover border border-white/15 bg-black shrink-0"
+          />
+          <span className="font-display text-sm lg:text-base font-bold tracking-tight text-[#F4F5F7] whitespace-nowrap shrink-0">
+            Hoạt Tự
+          </span>
+        </div>
         <span className="hidden md:inline text-white/15 select-none" aria-hidden="true">
           /
         </span>

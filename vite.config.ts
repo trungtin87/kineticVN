@@ -19,6 +19,7 @@ export default defineConfig(() => {
       VitePWA({
         registerType: 'autoUpdate',
         includeAssets: [
+          'assets/aistudio/file_00000000bf188211bf463903466f8fc8_93b63c53.png',
           'icon.svg',
           'apple-touch-icon.png',
           'pwa-192x192.png',
@@ -27,10 +28,10 @@ export default defineConfig(() => {
         ],
         manifest: {
           id: basePath,
-          name: 'Kinetik Studio — Kinetic Typography',
-          short_name: 'Kinetik',
+          name: 'Hoạt Tự — Kinetic Typography Studio',
+          short_name: 'Hoạt Tự',
           description:
-            'Tạo video Kinetic Typography từ SRT và Audio với nền động, MP4 và MOV ProRes 4444 Alpha.',
+            'Tạo video Kinetic Typography Storytelling từ SRT và Audio với âm thanh thiên nhiên, nền động, MP4 và MOV ProRes 4444 Alpha.',
           theme_color: '#0B0C0F',
           background_color: '#0B0C0F',
           display: 'standalone',
@@ -38,6 +39,12 @@ export default defineConfig(() => {
           start_url: basePath,
           scope: basePath,
           icons: [
+            {
+              src: `${basePath}assets/aistudio/file_00000000bf188211bf463903466f8fc8_93b63c53.png`,
+              sizes: '1024x1024',
+              type: 'image/png',
+              purpose: 'any',
+            },
             {
               src: `${basePath}pwa-192x192.png`,
               sizes: '192x192',

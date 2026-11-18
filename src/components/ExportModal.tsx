@@ -467,11 +467,13 @@ export const ExportModal: React.FC<ExportModalProps> = ({
           });
         }
       }
-      if (
-        useServerVideoComposite &&
-        project.background.bgAudioSource === 'custom' &&
-        bgAudioFile
-      ) {
+      const shouldUploadCustomBgAudio =
+        includeBackground &&
+        Boolean(bgAudioFile) &&
+        project.background.bgAudioVolume > 0.005 &&
+        (project.background.mode !== 'video' || project.background.bgAudioSource === 'custom');
+
+      if (shouldUploadCustomBgAudio && bgAudioFile) {
         if (bgAudioFile.size <= INLINE_ASSET_LIMIT_BYTES) {
           form.append('bgAudio', bgAudioFile, bgAudioFile.name);
         } else {
@@ -479,7 +481,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
             field: 'bgAudio',
             file: bgAudioFile,
             filename: bgAudioFile.name,
-            label: 'nhạc nền thay thế',
+            label: 'nhạc nền / âm thanh thiên nhiên',
           });
         }
       }

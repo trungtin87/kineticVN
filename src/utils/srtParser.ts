@@ -75,6 +75,41 @@ export function tokenizeCueText(text: string): {
 }
 
 /**
+ * Maps a character selection range [selStart, selEnd] inside cue.text
+ * to the matching flat word indices produced by tokenizeCueText.
+ */
+export function findWordIndicesInTextRange(
+  text: string,
+  selStart: number,
+  selEnd: number
+): number[] {
+  const start = Math.min(selStart, selEnd);
+  const end = Math.max(selStart, selEnd);
+  if (end <= start) return [];
+
+  const matched: number[] = [];
+  const lines = text.split('\n');
+  let charOffset = 0;
+  let wordIndex = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const regex = /\S+/g;
+    let m: RegExpExecArray | null;
+    while ((m = regex.exec(line)) !== null) {
+      const tokStart = charOffset + m.index;
+      const tokEnd = tokStart + m[0].length;
+      if (tokEnd > start && tokStart < end) {
+        matched.push(wordIndex);
+      }
+      wordIndex++;
+    }
+    charOffset += line.length + 1;
+  }
+  return matched;
+}
+
+/**
  * Automatically inserts clean line breaks into cue text every N words
  * or balances into two lines.
  */

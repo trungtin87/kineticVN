@@ -14,12 +14,17 @@ import {
   EffectsConfig,
   MotionConfig,
   ProgressBarConfig,
+  SoundscapeConfig,
   StudioProject,
   SubtitleCue,
   TypographyConfig,
   WatermarkConfig,
 } from './types/studio';
 import { preloadWatermarkImage } from './engine/kineticRenderer';
+import {
+  renderSoundscapeMixWavFile,
+  SOUNDSCAPE_COMBOS,
+} from './utils/soundscapeLibrary';
 import {
   buildAudioEnvelope,
   buildWaveformPeaks,
@@ -64,6 +69,12 @@ const DEFAULT_PROGRESS_BAR: ProgressBarConfig = {
   color: '#FF5A1F',
   trackColor: 'rgba(255,255,255,0.18)',
   opacity: 0.9,
+};
+
+const DEFAULT_SOUNDSCAPE: SoundscapeConfig = {
+  enabled: false,
+  presetId: null,
+  layers: {},
 };
 
 function autoCoalesceKey(
@@ -115,6 +126,7 @@ export default function App() {
 
   const [bgAudioFile, setBgAudioFile] = useState<File | null>(null);
   const [bgAudioName, setBgAudioName] = useState<string | null>(null);
+  const [isPreviewingSoundscape, setIsPreviewingSoundscape] = useState(false);
 
   const [importOpen, setImportOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
@@ -124,10 +136,16 @@ export default function App() {
   const audioUrlRef = useRef<string | null>(null);
   const bgAudioElRef = useRef<HTMLAudioElement | null>(null);
   const bgAudioUrlRef = useRef<string | null>(null);
+  const userUploadedBgAudioRef = useRef(false);
+  const isPreviewingSoundscapeRef = useRef(false);
   const videoUrlRef = useRef<string | null>(null);
   const rafRef = useRef<number | null>(null);
   const lastFrameTsRef = useRef<number>(0);
   const autosaveReadyRef = useRef(false);
+
+  useEffect(() => {
+    isPreviewingSoundscapeRef.current = isPreviewingSoundscape;
+  }, [isPreviewingSoundscape]);
 
   const loadAudioBlob = useCallback(async (blob: Blob, name: string | null) => {
     setAudioBlob(blob);
@@ -445,17 +463,29 @@ export default function App() {
       if (!bgAudio) return;
 
       const isCustomActive =
-        project.background.mode === 'video' &&
-        project.background.bgAudioSource === 'custom' &&
+        project.background.mode !== 'transparent' &&
+        (project.background.mode !== 'video' || project.background.bgAudioSource === 'custom') &&
         Boolean(bgAudioFile);
       const bgVol = Math.max(0, Math.min(1, project.background.bgAudioVolume));
+      const standalonePreview = !playing && isPreviewingSoundscapeRef.current;
 
       bgAudio.muted = isMuted || !isCustomActive || bgVol <= 0.005;
       bgAudio.volume = isCustomActive && !isMuted ? bgVol : 0;
 
-      if (!isCustomActive || !playing || bgVol <= 0.005) {
+      if (!isCustomActive || bgVol <= 0.005) {
         if (!bgAudio.paused) bgAudio.pause();
-        if (isCustomActive && !playing && Number.isFinite(bgAudio.duration) && bgAudio.duration > 0.05) {
+        return;
+      }
+
+      if (!playing) {
+        if (standalonePreview) {
+          if (bgAudio.paused) {
+            bgAudio.play().catch(() => {});
+          }
+          return;
+        }
+        if (!bgAudio.paused) bgAudio.pause();
+        if (Number.isFinite(bgAudio.duration) && bgAudio.duration > 0.05) {
           bgAudio.currentTime = t % bgAudio.duration;
         }
         return;
@@ -490,7 +520,63 @@ export default function App() {
     project.background.bgAudioSource,
     project.background.bgAudioVolume,
     bgAudioFile,
+    isPreviewingSoundscape,
   ]);
+
+  // Synthesize seamless multi-layer ambient WAV when Soundscape mixer changes
+  const soundscapeSerialized = JSON.stringify(project.soundscape ?? DEFAULT_SOUNDSCAPE);
+  useEffect(() => {
+    const sc = project.soundscape;
+    const hasActiveLayers =
+      Boolean(sc?.enabled) &&
+      Object.values(sc?.layers || {}).some((v) => v > 0.01);
+
+    if (!hasActiveLayers) {
+      if (!userUploadedBgAudioRef.current && bgAudioFile) {
+        if (bgAudioElRef.current) {
+          bgAudioElRef.current.pause();
+          bgAudioElRef.current.removeAttribute('src');
+          bgAudioElRef.current.load();
+        }
+        if (bgAudioUrlRef.current) {
+          URL.revokeObjectURL(bgAudioUrlRef.current);
+          bgAudioUrlRef.current = null;
+        }
+        setBgAudioFile(null);
+        setBgAudioName(null);
+        setIsPreviewingSoundscape(false);
+      }
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      const comboName = sc?.presetId
+        ? SOUNDSCAPE_COMBOS.find((c) => c.id === sc.presetId)?.name
+        : null;
+      const activeCount = Object.values(sc!.layers).filter((v) => v > 0.01).length;
+      const label = comboName || `Phối âm Thiên nhiên (${activeCount} lớp)`;
+      const wavFile = renderSoundscapeMixWavFile(sc!.layers, comboName || 'hoattu_soundscape');
+      if (!wavFile) return;
+
+      userUploadedBgAudioRef.current = false;
+      if (bgAudioUrlRef.current) URL.revokeObjectURL(bgAudioUrlRef.current);
+      const url = URL.createObjectURL(wavFile);
+      bgAudioUrlRef.current = url;
+
+      if (bgAudioElRef.current) {
+        bgAudioElRef.current.src = url;
+        bgAudioElRef.current.load();
+        if (isPreviewingSoundscapeRef.current || isPlaying) {
+          bgAudioElRef.current.play().catch(() => {});
+        }
+      }
+      setBgAudioFile(wavFile);
+      setBgAudioName(label);
+    }, 160);
+
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [soundscapeSerialized]);
 
   const seekTo = useCallback(
     (nextTime: number) => {
@@ -509,7 +595,9 @@ export default function App() {
     if (!isPlaying) {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       audioElRef.current?.pause();
-      bgAudioElRef.current?.pause();
+      if (!isPreviewingSoundscapeRef.current) {
+        bgAudioElRef.current?.pause();
+      }
       if (bgVideoEl) {
         bgVideoEl.muted = true;
         bgVideoEl.pause();
@@ -519,6 +607,10 @@ export default function App() {
         bgVideoEl2.pause();
       }
       return;
+    }
+
+    if (isPreviewingSoundscapeRef.current) {
+      setIsPreviewingSoundscape(false);
     }
 
     const audio = audioElRef.current;
@@ -691,6 +783,7 @@ export default function App() {
   };
 
   const handleUploadBgAudio = (file: File) => {
+    userUploadedBgAudioRef.current = true;
     if (bgAudioUrlRef.current) URL.revokeObjectURL(bgAudioUrlRef.current);
     const url = URL.createObjectURL(file);
     bgAudioUrlRef.current = url;
@@ -704,10 +797,13 @@ export default function App() {
     setProject((p) => ({
       ...p,
       background: { ...p.background, bgAudioSource: 'custom' },
+      soundscape: { ...DEFAULT_SOUNDSCAPE, enabled: false },
     }));
   };
 
   const handleClearBgAudio = () => {
+    userUploadedBgAudioRef.current = false;
+    setIsPreviewingSoundscape(false);
     if (bgAudioElRef.current) {
       bgAudioElRef.current.pause();
       bgAudioElRef.current.removeAttribute('src');
@@ -721,8 +817,34 @@ export default function App() {
     setBgAudioName(null);
     setProject((p) => ({
       ...p,
-      background: { ...p.background, bgAudioSource: 'video' },
+      background: {
+        ...p.background,
+        bgAudioSource: p.background.mode === 'video' ? 'video' : 'custom',
+      },
+      soundscape: { ...DEFAULT_SOUNDSCAPE, enabled: false },
     }));
+  };
+
+  const handleTogglePreviewSoundscape = () => {
+    if (isPreviewingSoundscape) {
+      setIsPreviewingSoundscape(false);
+      bgAudioElRef.current?.pause();
+      return;
+    }
+    setIsPlaying(false);
+    if (project.background.bgAudioVolume <= 0.005) {
+      setProject((p) => ({
+        ...p,
+        background: { ...p.background, bgAudioVolume: 0.3 },
+      }));
+    }
+    setIsPreviewingSoundscape(true);
+    const el = bgAudioElRef.current;
+    if (el && bgAudioFile) {
+      el.muted = isMuted;
+      el.volume = isMuted ? 0 : Math.max(0.05, Math.min(1, project.background.bgAudioVolume || 0.3));
+      el.play().catch(() => {});
+    }
   };
 
   const handleUpdateCue = (cueId: string, patch: Partial<SubtitleCue>, coalesceKey?: string) => {
@@ -1022,6 +1144,7 @@ export default function App() {
           typography={project.typography}
           motion={project.motion}
           background={project.background}
+          soundscape={project.soundscape ?? DEFAULT_SOUNDSCAPE}
           effects={project.effects}
           watermark={project.watermark ?? DEFAULT_WATERMARK}
           progressBar={project.progressBar ?? DEFAULT_PROGRESS_BAR}
@@ -1029,6 +1152,7 @@ export default function App() {
           bgVideoDurationSec={bgVideoDurationSec}
           totalDurationSec={totalDurationSec}
           bgAudioName={bgAudioName}
+          isPreviewingSoundscape={isPreviewingSoundscape}
           canMergeNextCue={canMergeSelectedCue}
           onUpdateCue={handleUpdateCue}
           onSplitCue={handleSplitCue}
@@ -1054,6 +1178,21 @@ export default function App() {
               key ? { coalesceKey: key } : undefined
             );
           }}
+          onUpdateSoundscape={(patch: Partial<SoundscapeConfig>, coalesceKey?: string) => {
+            const key = autoCoalesceKey('sc', patch as Record<string, unknown>, coalesceKey);
+            setProject(
+              (p) => ({
+                ...p,
+                soundscape: {
+                  ...DEFAULT_SOUNDSCAPE,
+                  ...p.soundscape,
+                  ...patch,
+                },
+              }),
+              key ? { coalesceKey: key } : undefined
+            );
+          }}
+          onTogglePreviewSoundscape={handleTogglePreviewSoundscape}
           onUpdateEffects={(patch: Partial<EffectsConfig>, coalesceKey?: string) => {
             const key = autoCoalesceKey('fx', patch as Record<string, unknown>, coalesceKey);
             setProject(

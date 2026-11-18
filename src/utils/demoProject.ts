@@ -27,7 +27,7 @@ Xuất MP4 sắc nét hoặc
 
 export function createDefaultProject(): StudioProject {
   return {
-    name: 'Kinetik Demo Reel',
+    name: 'Hoạt Tự Demo Reel',
     aspectRatio: '16:9',
     cues: [
       {

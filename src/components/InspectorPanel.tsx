@@ -1,17 +1,23 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlignCenter,
   AlignLeft,
   AlignRight,
+  BookmarkCheck,
   Clock,
   Combine,
   Film,
+  Highlighter,
   ImagePlus,
   Layers,
+  Music,
   Palette,
+  Play,
   RotateCcw,
   Scissors,
   Sparkles,
+  Square,
+  Trees,
   Type,
   Upload,
   Volume2,
@@ -28,6 +34,7 @@ import {
   EmphasisStyle,
   MotionConfig,
   ProgressBarConfig,
+  SoundscapeConfig,
   SubtitleCue,
   TextAlignMode,
   TextTransformMode,
@@ -46,9 +53,15 @@ import {
   saveCustomGoogleFont,
 } from '../utils/googleFonts';
 import {
+  SOUNDSCAPE_COMBOS,
+  SOUNDSCAPE_LAYERS,
+  SoundscapeCategory,
+} from '../utils/soundscapeLibrary';
+import {
   autoWrapCueText,
   balanceTwoLines,
   distributeWordTimingsEvenly,
+  findWordIndicesInTextRange,
   tokenizeCueText,
 } from '../utils/srtParser';
 import { STYLE_TEMPLATES, StyleTemplate } from '../utils/styleTemplates';
@@ -61,6 +74,7 @@ interface InspectorPanelProps {
   typography: TypographyConfig;
   motion: MotionConfig;
   background: BackgroundConfig;
+  soundscape?: SoundscapeConfig;
   effects?: EffectsConfig;
   watermark?: WatermarkConfig;
   progressBar?: ProgressBarConfig;
@@ -68,6 +82,7 @@ interface InspectorPanelProps {
   bgVideoDurationSec?: number;
   totalDurationSec?: number;
   bgAudioName?: string | null;
+  isPreviewingSoundscape?: boolean;
   canMergeNextCue?: boolean;
   onUpdateCue: (cueId: string, patch: Partial<SubtitleCue>, coalesceKey?: string) => void;
   onSplitCue?: (cueId: string) => void;
@@ -75,6 +90,8 @@ interface InspectorPanelProps {
   onUpdateTypography: (patch: Partial<TypographyConfig>, coalesceKey?: string) => void;
   onUpdateMotion: (patch: Partial<MotionConfig>, coalesceKey?: string) => void;
   onUpdateBackground: (patch: Partial<BackgroundConfig>, coalesceKey?: string) => void;
+  onUpdateSoundscape?: (patch: Partial<SoundscapeConfig>, coalesceKey?: string) => void;
+  onTogglePreviewSoundscape?: () => void;
   onUpdateEffects?: (patch: Partial<EffectsConfig>, coalesceKey?: string) => void;
   onUpdateWatermark?: (patch: Partial<WatermarkConfig>, coalesceKey?: string) => void;
   onUpdateProgressBar?: (patch: Partial<ProgressBarConfig>, coalesceKey?: string) => void;
@@ -119,6 +136,34 @@ const ANCHOR_POINTS: { x: number; y: number; label: string }[] = [
   { x: 0.86, y: 0.82, label: 'Dưới Phải' },
 ];
 
+const LAST_EMPHASIS_STORAGE_KEY = 'hoattu_last_emphasis_preset_v1';
+
+function loadLastEmphasisPreset(): WordStyleOverride | null {
+  try {
+    const raw = localStorage.getItem(LAST_EMPHASIS_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as WordStyleOverride;
+    if (parsed && typeof parsed === 'object') {
+      return { ...parsed, emphasized: true };
+    }
+  } catch {
+    // Ignore storage read issues
+  }
+  return null;
+}
+
+function saveLastEmphasisPreset(preset: WordStyleOverride | null) {
+  try {
+    if (!preset) {
+      localStorage.removeItem(LAST_EMPHASIS_STORAGE_KEY);
+    } else {
+      localStorage.setItem(LAST_EMPHASIS_STORAGE_KEY, JSON.stringify({ ...preset, emphasized: true }));
+    }
+  } catch {
+    // Ignore storage write issues
+  }
+}
+
 export const InspectorPanel: React.FC<InspectorPanelProps> = ({
   activeTab,
   onTabChange,
@@ -126,6 +171,7 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
   typography,
   motion,
   background,
+  soundscape,
   effects,
   watermark,
   progressBar,
@@ -133,6 +179,7 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
   bgVideoDurationSec = 0,
   totalDurationSec = 0,
   bgAudioName = null,
+  isPreviewingSoundscape = false,
   canMergeNextCue = false,
   onUpdateCue,
   onSplitCue,
@@ -140,6 +187,8 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
   onUpdateTypography,
   onUpdateMotion,
   onUpdateBackground,
+  onUpdateSoundscape,
+  onTogglePreviewSoundscape,
   onUpdateEffects,
   onUpdateWatermark,
   onUpdateProgressBar,
@@ -152,6 +201,13 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
 }) => {
   const [activeWordIdx, setActiveWordIdx] = useState<number | null>(null);
   const [showWordTimings, setShowWordTimings] = useState(false);
+  const [textSelection, setTextSelection] = useState<{ start: number; end: number } | null>(null);
+  const [lastEmphasisPreset, setLastEmphasisPreset] = useState<WordStyleOverride | null>(() =>
+    loadLastEmphasisPreset()
+  );
+  const [chipDragRange, setChipDragRange] = useState<{ start: number; end: number } | null>(null);
+  const [soundCategory, setSoundCategory] = useState<'ALL' | SoundscapeCategory>('ALL');
+
   const [customFonts, setCustomFonts] = useState<FontOption[]>(() => getStoredCustomFonts());
   const [fontCategory, setFontCategory] = useState<'ALL' | FontOption['category']>('ALL');
   const [fontQuery, setFontQuery] = useState('');
@@ -159,6 +215,42 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
   const [fontLoadingMsg, setFontLoadingMsg] = useState<string | null>(null);
   const [fontErrorMsg, setFontErrorMsg] = useState<string | null>(null);
   const [motionQuery, setMotionQuery] = useState('');
+
+  useEffect(() => {
+    setTextSelection(null);
+    setActiveWordIdx(null);
+    setChipDragRange(null);
+  }, [selectedCue?.id]);
+
+  const resolvedEmphasisTemplate = useMemo<WordStyleOverride>(() => {
+    return {
+      emphasized: true,
+      color: lastEmphasisPreset?.color || typography.emphasisColor,
+      style: lastEmphasisPreset?.style || typography.emphasisStyle,
+      ...(lastEmphasisPreset?.scale !== undefined ? { scale: lastEmphasisPreset.scale } : {}),
+      ...(lastEmphasisPreset?.fontFamily ? { fontFamily: lastEmphasisPreset.fontFamily } : {}),
+      ...(lastEmphasisPreset?.fontWeight ? { fontWeight: lastEmphasisPreset.fontWeight } : {}),
+      ...(lastEmphasisPreset?.rotateDeg !== undefined
+        ? { rotateDeg: lastEmphasisPreset.rotateDeg }
+        : {}),
+      ...(lastEmphasisPreset?.offsetY !== undefined ? { offsetY: lastEmphasisPreset.offsetY } : {}),
+      ...(lastEmphasisPreset?.bgColor ? { bgColor: lastEmphasisPreset.bgColor } : {}),
+      ...(lastEmphasisPreset?.uppercase !== undefined
+        ? { uppercase: lastEmphasisPreset.uppercase }
+        : {}),
+    };
+  }, [lastEmphasisPreset, typography.emphasisColor, typography.emphasisStyle]);
+
+  const rememberEmphasisPreset = (nextStyle: WordStyleOverride) => {
+    const clean: WordStyleOverride = { ...nextStyle, emphasized: true };
+    setLastEmphasisPreset(clean);
+    saveLastEmphasisPreset(clean);
+  };
+
+  const selectedTextWordIndices = useMemo(() => {
+    if (!selectedCue || !textSelection || textSelection.end <= textSelection.start) return [];
+    return findWordIndicesInTextRange(selectedCue.text, textSelection.start, textSelection.end);
+  }, [selectedCue, textSelection]);
 
   const allFonts: FontOption[] = [
     ...customFonts,
@@ -191,7 +283,44 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
     setCustomFontInput('');
   };
 
-  const toggleWordEmphasis = (cue: SubtitleCue, wordIdx: number) => {
+  const applyRememberedEmphasisToIndices = (cue: SubtitleCue, indices: number[]) => {
+    if (indices.length === 0) return;
+    const nextStyles = { ...cue.wordStyles };
+    for (const idx of indices) {
+      nextStyles[idx] = { ...resolvedEmphasisTemplate, emphasized: true };
+    }
+    onUpdateCue(cue.id, { wordStyles: nextStyles });
+    setActiveWordIdx(indices[0]);
+    rememberEmphasisPreset(resolvedEmphasisTemplate);
+  };
+
+  const clearEmphasisFromIndices = (cue: SubtitleCue, indices: number[]) => {
+    if (indices.length === 0) return;
+    const nextStyles = { ...cue.wordStyles };
+    for (const idx of indices) {
+      delete nextStyles[idx];
+    }
+    onUpdateCue(cue.id, { wordStyles: nextStyles });
+    if (activeWordIdx !== null && indices.includes(activeWordIdx)) {
+      setActiveWordIdx(null);
+    }
+  };
+
+  const toggleWordEmphasis = (
+    cue: SubtitleCue,
+    wordIdx: number,
+    e?: React.MouseEvent<HTMLButtonElement>
+  ) => {
+    // Shift+Click: quickly emphasize contiguous range from activeWordIdx to clicked word
+    if (e?.shiftKey && activeWordIdx !== null) {
+      const from = Math.min(activeWordIdx, wordIdx);
+      const to = Math.max(activeWordIdx, wordIdx);
+      const range: number[] = [];
+      for (let i = from; i <= to; i++) range.push(i);
+      applyRememberedEmphasisToIndices(cue, range);
+      return;
+    }
+
     const existing = cue.wordStyles[wordIdx];
     const nextStyles = { ...cue.wordStyles };
     if (existing?.emphasized) {
@@ -203,12 +332,10 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
       delete nextStyles[wordIdx];
       setActiveWordIdx(null);
     } else {
-      nextStyles[wordIdx] = {
-        emphasized: true,
-        color: typography.emphasisColor,
-        style: typography.emphasisStyle,
-      };
+      const applied = { ...resolvedEmphasisTemplate, emphasized: true };
+      nextStyles[wordIdx] = applied;
       setActiveWordIdx(wordIdx);
+      rememberEmphasisPreset(applied);
     }
     onUpdateCue(cue.id, { wordStyles: nextStyles });
   };
@@ -219,12 +346,14 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
     patch: Partial<WordStyleOverride>
   ) => {
     const existing = cue.wordStyles[wordIdx] || { emphasized: true };
+    const merged: WordStyleOverride = { ...existing, emphasized: true, ...patch };
     onUpdateCue(cue.id, {
       wordStyles: {
         ...cue.wordStyles,
-        [wordIdx]: { ...existing, emphasized: true, ...patch },
+        [wordIdx]: merged,
       },
     });
+    rememberEmphasisPreset(merged);
   };
 
   const applyPatchToTargetWords = (
@@ -235,10 +364,18 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
       updateWordStyle(cue, activeWordIdx, patch);
     } else {
       const updated = { ...cue.wordStyles };
+      let sampleMerged: WordStyleOverride | null = null;
       for (const k of Object.keys(updated)) {
-        updated[Number(k)] = { ...updated[Number(k)], ...patch };
+        const merged = { ...updated[Number(k)], emphasized: true, ...patch };
+        updated[Number(k)] = merged;
+        if (!sampleMerged) sampleMerged = merged;
       }
       onUpdateCue(cue.id, { wordStyles: updated });
+      if (sampleMerged) {
+        rememberEmphasisPreset(sampleMerged);
+      } else {
+        rememberEmphasisPreset({ ...resolvedEmphasisTemplate, ...patch });
+      }
     }
   };
 
@@ -314,9 +451,62 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                     rows={3}
                     value={selectedCue.text}
                     onChange={(e) => onUpdateCue(selectedCue.id, { text: e.target.value })}
+                    onSelect={(e) => {
+                      const s = e.currentTarget.selectionStart ?? 0;
+                      const end = e.currentTarget.selectionEnd ?? 0;
+                      setTextSelection(end > s ? { start: s, end } : null);
+                    }}
+                    onMouseUp={(e) => {
+                      const s = e.currentTarget.selectionStart ?? 0;
+                      const end = e.currentTarget.selectionEnd ?? 0;
+                      setTextSelection(end > s ? { start: s, end } : null);
+                    }}
+                    onKeyUp={(e) => {
+                      const s = e.currentTarget.selectionStart ?? 0;
+                      const end = e.currentTarget.selectionEnd ?? 0;
+                      setTextSelection(end > s ? { start: s, end } : null);
+                    }}
+                    onKeyDown={(e) => {
+                      if (
+                        (e.ctrlKey || e.metaKey) &&
+                        (e.key.toLowerCase() === 'e' || e.key.toLowerCase() === 'b') &&
+                        selectedTextWordIndices.length > 0
+                      ) {
+                        e.preventDefault();
+                        applyRememberedEmphasisToIndices(selectedCue, selectedTextWordIndices);
+                      }
+                    }}
                     className="w-full bg-[#171A21] border border-white/10 focus:border-[#FF5A1F] rounded-md p-2.5 text-sm text-[#F4F5F7] leading-relaxed focus:outline-none resize-y"
-                    placeholder="Nhập chữ và nhấn Enter để xuống dòng..."
+                    placeholder="Nhập chữ, bôi đen cụm từ để nhấn nhanh, hoặc Enter để xuống dòng..."
                   />
+
+                  {selectedTextWordIndices.length > 0 && (
+                    <div className="px-2.5 py-2 bg-[#1B1715] border border-[#FF5A1F]/45 rounded-md flex items-center justify-between gap-2">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          applyRememberedEmphasisToIndices(selectedCue, selectedTextWordIndices)
+                        }
+                        className="flex-1 flex items-center justify-center gap-1.5 py-1 px-2 bg-[#FF5A1F] hover:bg-[#FF7340] text-white text-[11px] font-semibold rounded cursor-pointer transition-colors"
+                      >
+                        <Highlighter className="w-3.5 h-3.5 shrink-0" />
+                        <span>
+                          Nhấn nhanh {selectedTextWordIndices.length} từ đã bôi
+                        </span>
+                      </button>
+                      {selectedTextWordIndices.some((i) => selectedCue.wordStyles[i]?.emphasized) && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            clearEmphasisFromIndices(selectedCue, selectedTextWordIndices)
+                          }
+                          className="py-1 px-2 bg-[#171A21] hover:bg-[#232734] border border-white/15 text-[#D5D9E2] text-[11px] rounded cursor-pointer"
+                        >
+                          Bỏ nhấn
+                        </button>
+                      )}
+                    </div>
+                  )}
 
                   <div className="grid grid-cols-4 gap-1.5">
                     <button
@@ -555,22 +745,94 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                       Bỏ chọn hết
                     </button>
                   </div>
-                  <p className="text-[11px] text-[#8E95A5]">
-                    Nhấn vào từng từ bên dưới để bật/tắt hiệu ứng nhấn mạnh và chọn màu riêng.
+                  <p className="text-[11px] text-[#8E95A5] leading-relaxed">
+                    Bôi đen chữ ở ô trên để nhấn nhanh, kéo chuột qua các thẻ từ, hoặc{' '}
+                    <span className="text-[#D5D9E2]">Shift+Click</span> chọn cả cụm.
                   </p>
 
-                  <div className="flex flex-wrap gap-1.5 p-2.5 bg-[#0E1015] border border-white/8 rounded-md">
+                  {/* Remembered Last Emphasis Preset Status Bar */}
+                  <div className="px-2.5 py-1.5 bg-[#151821] border border-white/8 rounded-md flex items-center justify-between gap-2 text-[10px]">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <BookmarkCheck className="w-3.5 h-3.5 text-[#34D399] shrink-0" />
+                      <span
+                        className="w-2.5 h-2.5 rounded-full border border-white/25 shrink-0"
+                        style={{ backgroundColor: resolvedEmphasisTemplate.color || typography.emphasisColor }}
+                      />
+                      <span className="text-[#D5D9E2] truncate">
+                        Mẫu nhớ:{' '}
+                        <strong className="text-white font-medium">
+                          {EMPHASIS_STYLES.find((s) => s.id === resolvedEmphasisTemplate.style)?.label ||
+                            'Đổi màu'}
+                        </strong>
+                        {resolvedEmphasisTemplate.scale
+                          ? ` • ${Math.round(resolvedEmphasisTemplate.scale * 100)}%`
+                          : ''}
+                        {resolvedEmphasisTemplate.uppercase ? ' • IN HOA' : ''}
+                      </span>
+                    </div>
+                    {lastEmphasisPreset && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setLastEmphasisPreset(null);
+                          saveLastEmphasisPreset(null);
+                        }}
+                        title="Quay lại mẫu nhấn mặc định của kiểu chữ"
+                        className="text-[#8E95A5] hover:text-white shrink-0 cursor-pointer"
+                      >
+                        Đặt lại
+                      </button>
+                    )}
+                  </div>
+
+                  <div
+                    onMouseLeave={() => {
+                      if (chipDragRange && chipDragRange.end !== chipDragRange.start) {
+                        const from = Math.min(chipDragRange.start, chipDragRange.end);
+                        const to = Math.max(chipDragRange.start, chipDragRange.end);
+                        const range: number[] = [];
+                        for (let i = from; i <= to; i++) range.push(i);
+                        applyRememberedEmphasisToIndices(selectedCue, range);
+                      }
+                      setChipDragRange(null);
+                    }}
+                    onMouseUp={() => {
+                      if (chipDragRange && chipDragRange.end !== chipDragRange.start) {
+                        const from = Math.min(chipDragRange.start, chipDragRange.end);
+                        const to = Math.max(chipDragRange.start, chipDragRange.end);
+                        const range: number[] = [];
+                        for (let i = from; i <= to; i++) range.push(i);
+                        applyRememberedEmphasisToIndices(selectedCue, range);
+                      }
+                      setChipDragRange(null);
+                    }}
+                    className="flex flex-wrap gap-1.5 p-2.5 bg-[#0E1015] border border-white/8 rounded-md select-none"
+                  >
                     {tokenizeCueText(selectedCue.text).flatWords.map((tok) => {
                       const ws = selectedCue.wordStyles[tok.wordIndex];
                       const isEmph = Boolean(ws?.emphasized);
                       const isFocused = activeWordIdx === tok.wordIndex && isEmph;
                       const wordColor = ws?.color || typography.emphasisColor;
+                      const inDragRange =
+                        chipDragRange !== null &&
+                        tok.wordIndex >= Math.min(chipDragRange.start, chipDragRange.end) &&
+                        tok.wordIndex <= Math.max(chipDragRange.start, chipDragRange.end);
 
                       return (
                         <button
                           key={tok.wordIndex}
                           type="button"
-                          onClick={() => toggleWordEmphasis(selectedCue, tok.wordIndex)}
+                          onMouseDown={() =>
+                            setChipDragRange({ start: tok.wordIndex, end: tok.wordIndex })
+                          }
+                          onMouseEnter={() => {
+                            if (chipDragRange) {
+                              setChipDragRange((prev) =>
+                                prev ? { ...prev, end: tok.wordIndex } : null
+                              );
+                            }
+                          }}
+                          onClick={(e) => toggleWordEmphasis(selectedCue, tok.wordIndex, e)}
                           style={
                             isEmph
                               ? {
@@ -580,7 +842,9 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                               : undefined
                           }
                           className={`px-2.5 py-1 text-xs font-medium rounded border transition-colors cursor-pointer ${
-                            isEmph
+                            inDragRange && chipDragRange.start !== chipDragRange.end
+                              ? 'bg-[#FF5A1F]/25 border-[#FF5A1F] text-white'
+                              : isEmph
                               ? `bg-white/8 ${isFocused ? 'ring-1 ring-white/50' : ''}`
                               : 'bg-[#171A21] border-white/10 text-[#D5D9E2] hover:border-white/25'
                           }`}
@@ -1899,12 +2163,44 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                   </div>
                 </div>
 
-                {/* Background Audio Mixer & Replacement Audio */}
-                <div className="space-y-3 pt-3 border-t border-white/8">
-                  <label className="text-xs font-semibold text-[#E2E5EC] block">
-                    Âm thanh nền &amp; Cân bằng Voice
+              </div>
+            )}
+
+            {/* Ambient Soundscape Library, Multi-Layer Nature Mixer & Background Audio Balance */}
+            {background.mode !== 'transparent' && (
+              <div className="space-y-3 pt-3 border-t border-white/8">
+                <div className="flex items-center justify-between gap-2">
+                  <label className="text-xs font-semibold text-[#E2E5EC] flex items-center gap-1.5">
+                    <Music className="w-3.5 h-3.5 text-[#38BDF8]" />
+                    <span>Âm thanh nền &amp; Phối âm Tự nhiên</span>
                   </label>
 
+                  {onTogglePreviewSoundscape && (bgAudioName || soundscape?.enabled) && (
+                    <button
+                      type="button"
+                      onClick={onTogglePreviewSoundscape}
+                      className={`px-2 py-1 rounded text-[10px] font-medium border flex items-center gap-1 cursor-pointer transition-colors ${
+                        isPreviewingSoundscape
+                          ? 'bg-[#FF5A1F]/20 border-[#FF5A1F] text-[#FF8C66]'
+                          : 'bg-[#171A21] border-white/10 text-[#D5D9E2] hover:text-white'
+                      }`}
+                    >
+                      {isPreviewingSoundscape ? (
+                        <>
+                          <Square className="w-2.5 h-2.5 fill-current" />
+                          <span>Dừng nghe thử</span>
+                        </>
+                      ) : (
+                        <>
+                          <Play className="w-2.5 h-2.5 fill-current" />
+                          <span>Nghe thử nền</span>
+                        </>
+                      )}
+                    </button>
+                  )}
+                </div>
+
+                {background.mode === 'video' && (
                   <div className="grid grid-cols-2 gap-1.5">
                     <button
                       type="button"
@@ -1917,106 +2213,291 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                     >
                       Âm thanh gốc Video
                     </button>
-
-                    <label
-                      className={`py-2 px-2 text-[11px] font-medium rounded-md border transition-colors cursor-pointer flex items-center justify-center gap-1 truncate ${
-                        background.bgAudioSource === 'custom' && bgAudioName
+                    <button
+                      type="button"
+                      onClick={() => onUpdateBackground({ bgAudioSource: 'custom' })}
+                      className={`py-2 px-2 text-[11px] font-medium rounded-md border transition-colors cursor-pointer truncate ${
+                        background.bgAudioSource === 'custom'
                           ? 'bg-[#38BDF8]/18 border-[#38BDF8] text-white'
                           : 'bg-[#171A21] border-white/8 text-[#9BA3B4] hover:text-white'
                       }`}
                     >
-                      <Upload className="w-3 h-3 shrink-0" />
-                      <span className="truncate">
-                        {bgAudioName ? 'Đổi file khác' : 'Thay âm thanh'}
-                      </span>
-                      <input
-                        type="file"
-                        accept="audio/*,.mp3,.wav,.m4a,.aac,.ogg,.flac"
-                        className="hidden"
-                        onChange={(e) => {
-                          const f = e.target.files?.[0];
-                          if (f && onUploadBgAudio) onUploadBgAudio(f);
-                          e.target.value = '';
-                        }}
-                      />
-                    </label>
+                      Thư viện / File riêng
+                    </button>
                   </div>
+                )}
 
-                  {bgAudioName && (
-                    <div className="px-2.5 py-1.5 bg-[#161922] border border-[#38BDF8]/30 rounded-md flex items-center justify-between gap-2 text-[11px]">
-                      <span className="text-[#E2E5EC] truncate">Đang thay bằng: {bgAudioName}</span>
-                      {onClearBgAudio && (
-                        <button
-                          type="button"
-                          onClick={onClearBgAudio}
-                          title="Dùng lại âm thanh gốc từ video"
-                          className="p-0.5 text-[#8E95A5] hover:text-red-400 cursor-pointer shrink-0"
-                        >
-                          <X className="w-3.5 h-3.5" />
-                        </button>
-                      )}
+                {onUpdateSoundscape && (
+                  <div className="space-y-3">
+                    {/* Curated Storytelling Combos */}
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-medium text-[#A1A8B8]">
+                          Gợi ý phối âm Storytelling
+                        </span>
+                        {(soundscape?.enabled || bgAudioName) && onClearBgAudio && (
+                          <button
+                            type="button"
+                            onClick={onClearBgAudio}
+                            className="text-[10px] text-[#8E95A5] hover:text-red-400 cursor-pointer"
+                          >
+                            Tắt nhạc nền
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-1.5">
+                        {SOUNDSCAPE_COMBOS.map((combo) => {
+                          const isComboActive =
+                            soundscape?.enabled && soundscape.presetId === combo.id;
+                          return (
+                            <button
+                              key={combo.id}
+                              type="button"
+                              onClick={() => {
+                                onUpdateSoundscape({
+                                  enabled: true,
+                                  presetId: combo.id,
+                                  layers: { ...combo.layers },
+                                });
+                                if (background.mode === 'video' && background.bgAudioSource !== 'custom') {
+                                  onUpdateBackground({ bgAudioSource: 'custom' });
+                                }
+                              }}
+                              className={`p-2 rounded-md border text-left transition-colors cursor-pointer ${
+                                isComboActive
+                                  ? 'bg-[#38BDF8]/16 border-[#38BDF8] text-white'
+                                  : 'bg-[#171A21] border-white/8 hover:bg-[#1D212B] text-[#E2E5EC]'
+                              }`}
+                            >
+                              <div className="text-[11px] font-semibold truncate">
+                                {combo.name}
+                              </div>
+                              <div className="text-[10px] text-[#8E95A5] truncate mt-0.5">
+                                {combo.desc}
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
+
+                    {/* Multi-Layer Custom Mixer */}
+                    <div className="p-2.5 bg-[#0E1015] border border-white/8 rounded-md space-y-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[11px] font-medium text-[#D5D9E2] flex items-center gap-1.5">
+                          <Trees className="w-3.5 h-3.5 text-[#34D399]" />
+                          <span>Tự ghép âm thanh nhiều lớp</span>
+                        </span>
+                        <div className="flex items-center gap-1">
+                          {(
+                            [
+                              { id: 'ALL', label: 'Tất cả' },
+                              { id: 'nature', label: 'Thiên nhiên' },
+                              { id: 'music', label: 'Nhạc nền' },
+                            ] as const
+                          ).map((cat) => (
+                            <button
+                              key={cat.id}
+                              type="button"
+                              onClick={() => setSoundCategory(cat.id)}
+                              className={`px-1.5 py-0.5 text-[10px] rounded cursor-pointer ${
+                                soundCategory === cat.id
+                                  ? 'bg-[#1D212B] text-white font-medium'
+                                  : 'text-[#8E95A5] hover:text-white'
+                              }`}
+                            >
+                              {cat.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="max-h-52 overflow-y-auto space-y-1.5 pr-0.5">
+                        {SOUNDSCAPE_LAYERS.filter(
+                          (l) => soundCategory === 'ALL' || l.category === soundCategory
+                        ).map((layer) => {
+                          const layerVol = soundscape?.enabled
+                            ? soundscape.layers?.[layer.id] ?? 0
+                            : 0;
+                          const isLayerActive = layerVol > 0.01;
+                          return (
+                            <div
+                              key={layer.id}
+                              className={`px-2 py-1.5 rounded border transition-colors space-y-1.5 ${
+                                isLayerActive
+                                  ? 'bg-[#161B24] border-[#38BDF8]/40'
+                                  : 'bg-[#14171F] border-white/6'
+                              }`}
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const nextLayers = { ...(soundscape?.layers || {}) };
+                                    if (isLayerActive) {
+                                      delete nextLayers[layer.id];
+                                    } else {
+                                      nextLayers[layer.id] = 0.5;
+                                    }
+                                    const hasAny = Object.values(nextLayers).some((v) => v > 0.01);
+                                    onUpdateSoundscape({
+                                      enabled: hasAny,
+                                      presetId: null,
+                                      layers: nextLayers,
+                                    });
+                                    if (
+                                      hasAny &&
+                                      background.mode === 'video' &&
+                                      background.bgAudioSource !== 'custom'
+                                    ) {
+                                      onUpdateBackground({ bgAudioSource: 'custom' });
+                                    }
+                                  }}
+                                  className="flex items-center gap-2 text-left min-w-0 flex-1 cursor-pointer"
+                                >
+                                  <span
+                                    className={`w-2 h-2 rounded-full shrink-0 ${
+                                      isLayerActive ? 'bg-[#34D399]' : 'bg-white/20'
+                                    }`}
+                                  />
+                                  <div className="min-w-0">
+                                    <div className="text-[11px] font-medium text-[#E2E5EC] truncate">
+                                      {layer.name}
+                                    </div>
+                                    <div className="text-[9.5px] text-[#7C8496] truncate">
+                                      {layer.desc}
+                                    </div>
+                                  </div>
+                                </button>
+                                <span className="text-[10px] font-mono-tabular text-[#8E95A5] shrink-0">
+                                  {isLayerActive ? `${Math.round(layerVol * 100)}%` : layer.badge}
+                                </span>
+                              </div>
+
+                              {isLayerActive && (
+                                <input
+                                  type="range"
+                                  min={0.05}
+                                  max={1}
+                                  step={0.05}
+                                  value={layerVol}
+                                  onChange={(e) => {
+                                    const val = Number(e.target.value);
+                                    const nextLayers = {
+                                      ...(soundscape?.layers || {}),
+                                      [layer.id]: val,
+                                    };
+                                    onUpdateSoundscape(
+                                      {
+                                        enabled: true,
+                                        presetId: null,
+                                        layers: nextLayers,
+                                      },
+                                      `sc-layer-${layer.id}`
+                                    );
+                                  }}
+                                  className="w-full"
+                                />
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Upload Custom BGM File + Active File Banner */}
+                <div className="flex items-center gap-2">
+                  <label className="flex-1 py-2 px-2.5 text-[11px] font-medium rounded-md border bg-[#171A21] hover:bg-[#1D212B] border-white/10 text-[#E2E5EC] cursor-pointer flex items-center justify-center gap-1.5 truncate">
+                    <Upload className="w-3.5 h-3.5 text-[#FF5A1F] shrink-0" />
+                    <span className="truncate">
+                      {bgAudioName && !soundscape?.enabled
+                        ? `Đang dùng: ${bgAudioName}`
+                        : 'Hoặc tải nhạc nền riêng (.mp3/.wav)'}
+                    </span>
+                    <input
+                      type="file"
+                      accept="audio/*,.mp3,.wav,.m4a,.aac,.ogg,.flac"
+                      className="hidden"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f && onUploadBgAudio) onUploadBgAudio(f);
+                        e.target.value = '';
+                      }}
+                    />
+                  </label>
+                  {bgAudioName && onClearBgAudio && (
+                    <button
+                      type="button"
+                      onClick={onClearBgAudio}
+                      title="Gỡ âm thanh nền"
+                      className="p-2 text-[#8E95A5] hover:text-red-400 bg-[#171A21] border border-white/10 rounded-md cursor-pointer shrink-0"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
                   )}
+                </div>
 
-                  {/* Background Audio Volume */}
-                  <div className="space-y-1">
-                    <div className="flex items-center justify-between text-[11px] text-[#8E95A5]">
-                      <span className="flex items-center gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() =>
-                            onUpdateBackground({
-                              bgAudioVolume: background.bgAudioVolume > 0 ? 0 : 0.25,
-                            })
-                          }
-                          title={background.bgAudioVolume > 0 ? 'Tắt tiếng nền' : 'Bật tiếng nền'}
-                          className="text-[#9BA3B4] hover:text-white cursor-pointer"
-                        >
-                          {background.bgAudioVolume <= 0.005 ? (
-                            <VolumeX className="w-3.5 h-3.5 text-red-400" />
-                          ) : (
-                            <Volume2 className="w-3.5 h-3.5 text-[#38BDF8]" />
-                          )}
-                        </button>
-                        <span>Âm lượng nền</span>
-                      </span>
-                      <span className="font-mono-tabular">
-                        {Math.round(background.bgAudioVolume * 100)}%
-                      </span>
-                    </div>
-                    <input
-                      type="range"
-                      min={0}
-                      max={1}
-                      step={0.02}
-                      value={background.bgAudioVolume}
-                      onChange={(e) =>
-                        onUpdateBackground({ bgAudioVolume: Number(e.target.value) })
-                      }
-                      className="w-full"
-                    />
+                {/* Background Audio Volume */}
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-[11px] text-[#8E95A5]">
+                    <span className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onUpdateBackground({
+                            bgAudioVolume: background.bgAudioVolume > 0 ? 0 : 0.28,
+                          })
+                        }
+                        title={background.bgAudioVolume > 0 ? 'Tắt tiếng nền' : 'Bật tiếng nền'}
+                        className="text-[#9BA3B4] hover:text-white cursor-pointer"
+                      >
+                        {background.bgAudioVolume <= 0.005 ? (
+                          <VolumeX className="w-3.5 h-3.5 text-red-400" />
+                        ) : (
+                          <Volume2 className="w-3.5 h-3.5 text-[#38BDF8]" />
+                        )}
+                      </button>
+                      <span>Âm lượng nhạc nền</span>
+                    </span>
+                    <span className="font-mono-tabular">
+                      {Math.round(background.bgAudioVolume * 100)}%
+                    </span>
                   </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.02}
+                    value={background.bgAudioVolume}
+                    onChange={(e) =>
+                      onUpdateBackground({ bgAudioVolume: Number(e.target.value) })
+                    }
+                    className="w-full"
+                  />
+                </div>
 
-                  {/* Main Voice Volume */}
-                  <div className="space-y-1">
-                    <div className="flex items-center justify-between text-[11px] text-[#8E95A5]">
-                      <span>Âm lượng Voice / Audio chính</span>
-                      <span className="font-mono-tabular">
-                        {Math.round(background.voiceVolume * 100)}%
-                      </span>
-                    </div>
-                    <input
-                      type="range"
-                      min={0}
-                      max={1}
-                      step={0.02}
-                      value={background.voiceVolume}
-                      onChange={(e) =>
-                        onUpdateBackground({ voiceVolume: Number(e.target.value) })
-                      }
-                      className="w-full"
-                    />
+                {/* Main Voice Volume */}
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-[11px] text-[#8E95A5]">
+                    <span>Âm lượng Voice / Audio chính</span>
+                    <span className="font-mono-tabular">
+                      {Math.round(background.voiceVolume * 100)}%
+                    </span>
                   </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.02}
+                    value={background.voiceVolume}
+                    onChange={(e) =>
+                      onUpdateBackground({ voiceVolume: Number(e.target.value) })
+                    }
+                    className="w-full"
+                  />
                 </div>
               </div>
             )}
@@ -2103,7 +2584,7 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                       />
                     </div>
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1.5">
                       <label className="flex-1 flex items-center justify-center gap-2 py-2 px-3 bg-[#171A21] hover:bg-[#1D212B] border border-white/10 rounded-md cursor-pointer text-xs text-[#E2E5EC] truncate">
                         <ImagePlus className="w-3.5 h-3.5 text-[#FF5A1F] shrink-0" />
                         <span className="truncate">
@@ -2134,6 +2615,36 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                           }}
                         />
                       </label>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            const res = await fetch(
+                              `${import.meta.env.BASE_URL}assets/aistudio/file_00000000bf188211bf463903466f8fc8_93b63c53.png`
+                            );
+                            const blob = await res.blob();
+                            const reader = new FileReader();
+                            reader.onload = () => {
+                              const dataUrl = typeof reader.result === 'string' ? reader.result : null;
+                              if (dataUrl) {
+                                preloadWatermarkImage(dataUrl);
+                                onUpdateWatermark({
+                                  enabled: true,
+                                  imageDataUrl: dataUrl,
+                                  name: 'Logo Hoạt Tự',
+                                });
+                              }
+                            };
+                            reader.readAsDataURL(blob);
+                          } catch {
+                            // Ignore asset load failure
+                          }
+                        }}
+                        title="Dùng logo Hoạt Tự mặc định"
+                        className="py-2 px-2.5 bg-[#171A21] hover:bg-[#1D212B] border border-white/10 rounded-md text-[11px] font-medium text-[#D5D9E2] hover:text-white cursor-pointer shrink-0"
+                      >
+                        Logo Hoạt Tự
+                      </button>
                       {watermark.imageDataUrl && (
                         <button
                           type="button"
