@@ -19,12 +19,14 @@ export default defineConfig(() => {
       VitePWA({
         registerType: 'autoUpdate',
         includeAssets: [
-          'assets/aistudio/file_00000000bf188211bf463903466f8fc8_93b63c53.png',
-          'icon.svg',
+          'favicon.ico',
+          'favicon-32x32.png',
+          'favicon-192x192.png',
           'apple-touch-icon.png',
           'pwa-192x192.png',
           'pwa-512x512.png',
           'pwa-maskable-512x512.png',
+          'assets/aistudio/file_00000000bf188211bf463903466f8fc8_93b63c53.png',
         ],
         manifest: {
           id: basePath,
@@ -39,12 +41,6 @@ export default defineConfig(() => {
           start_url: basePath,
           scope: basePath,
           icons: [
-            {
-              src: `${basePath}assets/aistudio/file_00000000bf188211bf463903466f8fc8_93b63c53.png`,
-              sizes: '1024x1024',
-              type: 'image/png',
-              purpose: 'any',
-            },
             {
               src: `${basePath}pwa-192x192.png`,
               sizes: '192x192',

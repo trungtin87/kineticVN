@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  ChevronLeft,
+  ChevronRight,
   Grid,
   Move,
   Pause,
@@ -8,12 +10,13 @@ import {
   ShieldAlert,
   SkipBack,
   SkipForward,
+  SlidersHorizontal,
   Volume2,
   VolumeX,
 } from 'lucide-react';
 import { ASPECT_RATIOS, StudioProject } from '../types/studio';
 import { renderKineticScene, RenderedCueBounds } from '../engine/kineticRenderer';
-import { formatTimecodeShort } from '../utils/srtParser';
+import { formatTimecodeShort, tokenizeCueText } from '../utils/srtParser';
 
 interface PreviewStageProps {
   project: StudioProject;
@@ -34,6 +37,9 @@ interface PreviewStageProps {
   onToggleMute: () => void;
   onUpdateCuePosition: (cueId: string, posX: number, posY: number) => void;
   onUpdateGlobalPosition: (posX: number, posY: number) => void;
+  onQuickToggleWord?: (cueId: string, wordIdx: number) => void;
+  onQuickSelectCue?: (cueId: string) => void;
+  onOpenCueEditor?: (cueId: string) => void;
 }
 
 export const PreviewStage: React.FC<PreviewStageProps> = ({
@@ -55,6 +61,9 @@ export const PreviewStage: React.FC<PreviewStageProps> = ({
   onToggleMute,
   onUpdateCuePosition,
   onUpdateGlobalPosition,
+  onQuickToggleWord,
+  onQuickSelectCue,
+  onOpenCueEditor,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -205,8 +214,24 @@ export const PreviewStage: React.FC<PreviewStageProps> = ({
     setSnapActive({ x: false, y: false });
   };
 
+  const activeCueIndex = (() => {
+    const atPlayhead = project.cues.findIndex(
+      (c) => currentTimeSec >= c.startSec && currentTimeSec <= c.endSec
+    );
+    if (atPlayhead >= 0) return atPlayhead;
+    const sel = project.cues.findIndex((c) => c.id === selectedCueId);
+    if (sel >= 0) return sel;
+    return project.cues.length > 0 ? 0 : -1;
+  })();
+  const stageCue = activeCueIndex >= 0 ? project.cues[activeCueIndex] : null;
+  const prevStageCue = activeCueIndex > 0 ? project.cues[activeCueIndex - 1] : null;
+  const nextStageCue =
+    activeCueIndex >= 0 && activeCueIndex < project.cues.length - 1
+      ? project.cues[activeCueIndex + 1]
+      : null;
+
   return (
-    <section className="h-[34vh] min-h-[210px] lg:h-auto lg:flex-1 bg-[#0B0C0F] flex flex-col min-w-0 shrink-0 lg:shrink border-b lg:border-b-0 border-white/8">
+    <section className="h-[38vh] min-h-[235px] lg:h-auto lg:flex-1 bg-[#0B0C0F] flex flex-col min-w-0 shrink-0 lg:shrink border-b lg:border-b-0 border-white/8">
       {/* Canvas Stage */}
       <div
         ref={containerRef}
@@ -261,6 +286,78 @@ export const PreviewStage: React.FC<PreviewStageProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Inline Quick Word-Emphasis & Cue Stepper Bar (no tab switching needed!) */}
+      {stageCue && onQuickToggleWord && (
+        <div className="h-9 px-2 lg:px-3 bg-[#0E1015] border-t border-white/8 flex items-center gap-1.5 shrink-0 min-w-0">
+          <div className="flex items-center gap-0.5 shrink-0">
+            <button
+              type="button"
+              disabled={!prevStageCue}
+              onClick={() => prevStageCue && onQuickSelectCue?.(prevStageCue.id)}
+              title="Câu trước"
+              className="p-1 text-[#9BA3B4] hover:text-white disabled:opacity-25 rounded hover:bg-white/5 cursor-pointer disabled:cursor-not-allowed"
+            >
+              <ChevronLeft className="w-3.5 h-3.5" />
+            </button>
+            <span className="px-1.5 py-0.5 rounded bg-[#171A21] border border-white/10 text-[10px] font-mono-tabular text-[#FF5A1F] font-semibold shrink-0">
+              #{String(activeCueIndex + 1).padStart(2, '0')}
+            </span>
+            <button
+              type="button"
+              disabled={!nextStageCue}
+              onClick={() => nextStageCue && onQuickSelectCue?.(nextStageCue.id)}
+              title="Câu tiếp theo"
+              className="p-1 text-[#9BA3B4] hover:text-white disabled:opacity-25 rounded hover:bg-white/5 cursor-pointer disabled:cursor-not-allowed"
+            >
+              <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          <div className="flex-1 flex items-center gap-1 overflow-x-auto min-w-0 py-0.5">
+            {tokenizeCueText(stageCue.text).flatWords.map((tok) => {
+              const ws = stageCue.wordStyles[tok.wordIndex];
+              const isEmph = Boolean(ws?.emphasized);
+              const color = ws?.color || project.typography.emphasisColor;
+              return (
+                <button
+                  key={tok.wordIndex}
+                  type="button"
+                  onClick={() => onQuickToggleWord(stageCue.id, tok.wordIndex)}
+                  style={
+                    isEmph
+                      ? {
+                          color,
+                          borderColor: `${color}88`,
+                          backgroundColor: `${color}1C`,
+                        }
+                      : undefined
+                  }
+                  className={`px-2 py-0.5 text-[11px] rounded border whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
+                    isEmph
+                      ? 'font-bold'
+                      : 'bg-[#171A21] border-white/10 text-[#D5D9E2] hover:border-white/30 hover:text-white'
+                  }`}
+                >
+                  {tok.word}
+                </button>
+              );
+            })}
+          </div>
+
+          {onOpenCueEditor && (
+            <button
+              type="button"
+              onClick={() => onOpenCueEditor(stageCue.id)}
+              title="Mở bảng tùy chỉnh màu & cỡ chữ câu này"
+              className="px-2 py-1 text-[10px] font-medium text-[#9BA3B4] hover:text-white bg-[#171A21] hover:bg-[#20242E] border border-white/10 rounded flex items-center gap-1 shrink-0 cursor-pointer"
+            >
+              <SlidersHorizontal className="w-3 h-3 text-[#FF5A1F]" />
+              <span className="hidden sm:inline">Tùy chỉnh</span>
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Transport Bar */}
       <div className="h-12 px-3 lg:px-4 bg-[#111318] border-t border-white/8 flex items-center justify-between gap-2 lg:gap-4 shrink-0">

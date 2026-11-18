@@ -1,5 +1,17 @@
 import React, { useMemo, useState } from 'react';
-import { Combine, Download, FileText, Music, Plus, Scissors, Search, Trash2, Upload } from 'lucide-react';
+import {
+  Combine,
+  Download,
+  FileText,
+  Highlighter,
+  Music,
+  Plus,
+  Scissors,
+  Search,
+  SlidersHorizontal,
+  Trash2,
+  Upload,
+} from 'lucide-react';
 import { SubtitleCue } from '../types/studio';
 import { formatTimecodeShort, tokenizeCueText } from '../utils/srtParser';
 
@@ -11,6 +23,7 @@ interface CueListPanelProps {
   audioDurationSec: number;
   emphasisDefaultColor: string;
   onSelectCue: (cueId: string, seek?: boolean) => void;
+  onQuickToggleWord?: (cueId: string, wordIdx: number) => void;
   onAddCue: () => void;
   onDeleteCue: (cueId: string) => void;
   onSplitCue?: (cueId: string) => void;
@@ -30,6 +43,7 @@ export const CueListPanel: React.FC<CueListPanelProps> = ({
   audioDurationSec,
   emphasisDefaultColor,
   onSelectCue,
+  onQuickToggleWord,
   onAddCue,
   onDeleteCue,
   onSplitCue,
@@ -41,6 +55,7 @@ export const CueListPanel: React.FC<CueListPanelProps> = ({
   className = '',
 }) => {
   const [query, setQuery] = useState('');
+  const [quickEmphasizeMode, setQuickEmphasizeMode] = useState(true);
 
   const filteredCues = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -121,26 +136,50 @@ export const CueListPanel: React.FC<CueListPanelProps> = ({
       </div>
 
       {/* Search & Add Header */}
-      <div className="px-3.5 py-2.5 border-b border-white/8 flex items-center gap-2 shrink-0">
-        <div className="relative flex-1 min-w-0">
-          <Search className="w-3.5 h-3.5 text-[#6F7685] absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-          <input
-            type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Tìm lời phụ đề..."
-            className="w-full bg-[#171A21] text-xs text-[#F4F5F7] placeholder:text-[#6F7685] pl-8 pr-2.5 py-1.5 rounded-md border border-white/8 focus:outline-none focus:border-[#FF5A1F]"
-          />
+      <div className="px-3.5 py-2.5 border-b border-white/8 space-y-2 shrink-0">
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1 min-w-0">
+            <Search className="w-3.5 h-3.5 text-[#6F7685] absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <input
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Tìm lời phụ đề..."
+              className="w-full bg-[#171A21] text-xs text-[#F4F5F7] placeholder:text-[#6F7685] pl-8 pr-2.5 py-1.5 rounded-md border border-white/8 focus:outline-none focus:border-[#FF5A1F]"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={onAddCue}
+            title="Thêm câu mới"
+            className="px-2.5 py-1.5 bg-[#171A21] hover:bg-[#20242E] border border-white/10 text-xs font-medium text-[#E2E5EC] rounded-md flex items-center gap-1 transition-colors cursor-pointer shrink-0"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>Thêm</span>
+          </button>
         </div>
-        <button
-          type="button"
-          onClick={onAddCue}
-          title="Thêm câu mới"
-          className="px-2.5 py-1.5 bg-[#171A21] hover:bg-[#20242E] border border-white/10 text-xs font-medium text-[#E2E5EC] rounded-md flex items-center gap-1 transition-colors cursor-pointer shrink-0"
-        >
-          <Plus className="w-3.5 h-3.5" />
-          <span>Thêm</span>
-        </button>
+
+        {onQuickToggleWord && (
+          <div className="flex items-center justify-between gap-2 text-[10.5px]">
+            <span className="text-[#8E95A5] truncate">
+              {quickEmphasizeMode
+                ? 'Chạm thẳng vào từ bất kỳ để nhấn nhanh'
+                : 'Chạm câu để mở trình sửa chi tiết'}
+            </span>
+            <button
+              type="button"
+              onClick={() => setQuickEmphasizeMode((v) => !v)}
+              className={`px-2 py-0.5 rounded border flex items-center gap-1 font-medium cursor-pointer shrink-0 transition-colors ${
+                quickEmphasizeMode
+                  ? 'bg-[#FF5A1F]/16 border-[#FF5A1F]/45 text-[#FF8C66]'
+                  : 'bg-[#171A21] border-white/10 text-[#9BA3B4] hover:text-white'
+              }`}
+            >
+              <Highlighter className="w-3 h-3" />
+              <span>{quickEmphasizeMode ? 'Nhấn nhanh: BẬT' : 'Nhấn nhanh: TẮT'}</span>
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Cue List */}
@@ -214,9 +253,21 @@ export const CueListPanel: React.FC<CueListPanelProps> = ({
 
                   <div
                     className={`flex items-center gap-0.5 transition-opacity shrink-0 ${
-                      isSelected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                      isSelected ? 'opacity-100' : 'opacity-100 lg:opacity-0 lg:group-hover:opacity-100'
                     }`}
                   >
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onSelectCue(cue.id, true);
+                      }}
+                      title="Mở bảng sửa chi tiết câu & màu nhấn"
+                      className="px-1.5 py-0.5 text-[10px] text-[#D5D9E2] hover:text-white bg-white/5 hover:bg-white/10 rounded flex items-center gap-1 cursor-pointer mr-0.5"
+                    >
+                      <SlidersHorizontal className="w-3 h-3 text-[#FF5A1F]" />
+                      <span>Sửa</span>
+                    </button>
                     {onSplitCue && canSplit && (
                       <button
                         type="button"
@@ -257,22 +308,53 @@ export const CueListPanel: React.FC<CueListPanelProps> = ({
                   </div>
                 </div>
 
-                <div className="text-xs leading-relaxed text-[#E7E9EE] space-y-0.5">
+                <div className="text-xs leading-relaxed text-[#E7E9EE] space-y-1">
                   {lines.map((line, lIdx) => (
-                    <div key={lIdx} className="flex flex-wrap gap-x-1">
+                    <div key={lIdx} className="flex flex-wrap gap-x-1 gap-y-1">
                       {line.length === 0 ? (
                         <span className="text-[#5B6270] italic">(dòng trống)</span>
                       ) : (
                         line.map((tok) => {
                           const ws = cue.wordStyles[tok.wordIndex];
                           const isEmph = Boolean(ws?.emphasized);
+                          const emphColor = ws?.color || emphasisDefaultColor;
+
+                          if (quickEmphasizeMode && onQuickToggleWord) {
+                            return (
+                              <button
+                                key={tok.wordIndex}
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onQuickToggleWord(cue.id, tok.wordIndex);
+                                }}
+                                style={
+                                  isEmph
+                                    ? {
+                                        color: emphColor,
+                                        borderColor: `${emphColor}66`,
+                                        backgroundColor: `${emphColor}18`,
+                                      }
+                                    : undefined
+                                }
+                                className={`px-1.5 py-0.5 rounded border text-xs transition-colors cursor-pointer ${
+                                  isEmph
+                                    ? 'font-bold'
+                                    : 'border-transparent hover:border-white/20 hover:bg-white/6 text-[#E7E9EE]'
+                                }`}
+                              >
+                                {tok.word}
+                              </button>
+                            );
+                          }
+
                           return (
                             <span
                               key={tok.wordIndex}
                               style={
                                 isEmph
                                   ? {
-                                      color: ws?.color || emphasisDefaultColor,
+                                      color: emphColor,
                                       fontWeight: 700,
                                     }
                                   : undefined

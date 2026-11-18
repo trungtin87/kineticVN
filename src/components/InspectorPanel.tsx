@@ -4,6 +4,8 @@ import {
   AlignLeft,
   AlignRight,
   BookmarkCheck,
+  ChevronLeft,
+  ChevronRight,
   Clock,
   Combine,
   Film,
@@ -58,10 +60,16 @@ import {
   SoundscapeCategory,
 } from '../utils/soundscapeLibrary';
 import {
+  loadLastEmphasisPreset,
+  resolveEmphasisTemplate,
+  saveLastEmphasisPreset,
+} from '../utils/emphasisPreset';
+import {
   autoWrapCueText,
   balanceTwoLines,
   distributeWordTimingsEvenly,
   findWordIndicesInTextRange,
+  formatTimecodeShort,
   tokenizeCueText,
 } from '../utils/srtParser';
 import { STYLE_TEMPLATES, StyleTemplate } from '../utils/styleTemplates';
@@ -71,6 +79,11 @@ interface InspectorPanelProps {
   activeTab: InspectorTab;
   onTabChange: (tab: InspectorTab) => void;
   selectedCue: SubtitleCue | null;
+  cues?: SubtitleCue[];
+  currentTimeSec?: number;
+  onQuickSelectCue?: (cueId: string) => void;
+  sharedEmphasisPreset?: WordStyleOverride | null;
+  onChangeSharedEmphasisPreset?: (preset: WordStyleOverride | null) => void;
   typography: TypographyConfig;
   motion: MotionConfig;
   background: BackgroundConfig;
@@ -136,38 +149,15 @@ const ANCHOR_POINTS: { x: number; y: number; label: string }[] = [
   { x: 0.86, y: 0.82, label: 'Dưới Phải' },
 ];
 
-const LAST_EMPHASIS_STORAGE_KEY = 'hoattu_last_emphasis_preset_v1';
-
-function loadLastEmphasisPreset(): WordStyleOverride | null {
-  try {
-    const raw = localStorage.getItem(LAST_EMPHASIS_STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as WordStyleOverride;
-    if (parsed && typeof parsed === 'object') {
-      return { ...parsed, emphasized: true };
-    }
-  } catch {
-    // Ignore storage read issues
-  }
-  return null;
-}
-
-function saveLastEmphasisPreset(preset: WordStyleOverride | null) {
-  try {
-    if (!preset) {
-      localStorage.removeItem(LAST_EMPHASIS_STORAGE_KEY);
-    } else {
-      localStorage.setItem(LAST_EMPHASIS_STORAGE_KEY, JSON.stringify({ ...preset, emphasized: true }));
-    }
-  } catch {
-    // Ignore storage write issues
-  }
-}
-
 export const InspectorPanel: React.FC<InspectorPanelProps> = ({
   activeTab,
   onTabChange,
   selectedCue,
+  cues = [],
+  currentTimeSec = 0,
+  onQuickSelectCue,
+  sharedEmphasisPreset,
+  onChangeSharedEmphasisPreset,
   typography,
   motion,
   background,
@@ -202,9 +192,11 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
   const [activeWordIdx, setActiveWordIdx] = useState<number | null>(null);
   const [showWordTimings, setShowWordTimings] = useState(false);
   const [textSelection, setTextSelection] = useState<{ start: number; end: number } | null>(null);
-  const [lastEmphasisPreset, setLastEmphasisPreset] = useState<WordStyleOverride | null>(() =>
+  const [localEmphasisPreset, setLocalEmphasisPreset] = useState<WordStyleOverride | null>(() =>
     loadLastEmphasisPreset()
   );
+  const lastEmphasisPreset =
+    sharedEmphasisPreset !== undefined ? sharedEmphasisPreset : localEmphasisPreset;
   const [chipDragRange, setChipDragRange] = useState<{ start: number; end: number } | null>(null);
   const [soundCategory, setSoundCategory] = useState<'ALL' | SoundscapeCategory>('ALL');
 
@@ -222,29 +214,19 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
     setChipDragRange(null);
   }, [selectedCue?.id]);
 
-  const resolvedEmphasisTemplate = useMemo<WordStyleOverride>(() => {
-    return {
-      emphasized: true,
-      color: lastEmphasisPreset?.color || typography.emphasisColor,
-      style: lastEmphasisPreset?.style || typography.emphasisStyle,
-      ...(lastEmphasisPreset?.scale !== undefined ? { scale: lastEmphasisPreset.scale } : {}),
-      ...(lastEmphasisPreset?.fontFamily ? { fontFamily: lastEmphasisPreset.fontFamily } : {}),
-      ...(lastEmphasisPreset?.fontWeight ? { fontWeight: lastEmphasisPreset.fontWeight } : {}),
-      ...(lastEmphasisPreset?.rotateDeg !== undefined
-        ? { rotateDeg: lastEmphasisPreset.rotateDeg }
-        : {}),
-      ...(lastEmphasisPreset?.offsetY !== undefined ? { offsetY: lastEmphasisPreset.offsetY } : {}),
-      ...(lastEmphasisPreset?.bgColor ? { bgColor: lastEmphasisPreset.bgColor } : {}),
-      ...(lastEmphasisPreset?.uppercase !== undefined
-        ? { uppercase: lastEmphasisPreset.uppercase }
-        : {}),
-    };
-  }, [lastEmphasisPreset, typography.emphasisColor, typography.emphasisStyle]);
+  const resolvedEmphasisTemplate = useMemo<WordStyleOverride>(
+    () => resolveEmphasisTemplate(lastEmphasisPreset, typography),
+    [lastEmphasisPreset, typography]
+  );
 
-  const rememberEmphasisPreset = (nextStyle: WordStyleOverride) => {
-    const clean: WordStyleOverride = { ...nextStyle, emphasized: true };
-    setLastEmphasisPreset(clean);
-    saveLastEmphasisPreset(clean);
+  const rememberEmphasisPreset = (nextStyle: WordStyleOverride | null) => {
+    const clean: WordStyleOverride | null = nextStyle ? { ...nextStyle, emphasized: true } : null;
+    if (onChangeSharedEmphasisPreset) {
+      onChangeSharedEmphasisPreset(clean);
+    } else {
+      setLocalEmphasisPreset(clean);
+      saveLastEmphasisPreset(clean);
+    }
   };
 
   const selectedTextWordIndices = useMemo(() => {
@@ -427,11 +409,79 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
       <div className="flex-1 overflow-y-auto p-4 space-y-6 min-h-0">
         {activeTab === 'cue' && (
           <>
+            {/* Quick Cue Switcher inside Câu & Từ so users never need to switch back to Phụ đề tab */}
+            {cues.length > 0 && onQuickSelectCue && (() => {
+              const selIdx = selectedCue ? cues.findIndex((c) => c.id === selectedCue.id) : -1;
+              const prevCue = selIdx > 0 ? cues[selIdx - 1] : null;
+              const nextCue =
+                selIdx >= 0 && selIdx < cues.length - 1 ? cues[selIdx + 1] : null;
+              const playheadIdx = cues.findIndex(
+                (c) => currentTimeSec >= c.startSec && currentTimeSec <= c.endSec
+              );
+              const playheadCue = playheadIdx >= 0 ? cues[playheadIdx] : null;
+              const showFollowPlayhead = Boolean(
+                playheadCue && playheadCue.id !== selectedCue?.id
+              );
+
+              return (
+                <div className="p-2 bg-[#0E1015] border border-white/10 rounded-md space-y-1.5">
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      disabled={!prevCue}
+                      onClick={() => prevCue && onQuickSelectCue(prevCue.id)}
+                      title="Câu trước"
+                      className="p-1.5 bg-[#171A21] hover:bg-[#20242E] disabled:opacity-30 border border-white/8 rounded text-[#D5D9E2] cursor-pointer disabled:cursor-not-allowed shrink-0"
+                    >
+                      <ChevronLeft className="w-3.5 h-3.5" />
+                    </button>
+
+                    <select
+                      value={selectedCue?.id || ''}
+                      onChange={(e) => {
+                        if (e.target.value) onQuickSelectCue(e.target.value);
+                      }}
+                      aria-label="Chuyển nhanh câu phụ đề"
+                      className="flex-1 min-w-0 bg-[#171A21] border border-white/10 rounded px-2 py-1 text-xs text-[#F4F5F7] focus:outline-none focus:border-[#FF5A1F] truncate"
+                    >
+                      {!selectedCue && <option value="">Chọn câu để sửa...</option>}
+                      {cues.map((c, idx) => (
+                        <option key={c.id} value={c.id}>
+                          #{String(idx + 1).padStart(2, '0')} ({formatTimecodeShort(c.startSec)}) —{' '}
+                          {c.text.replace(/\n+/g, ' ').slice(0, 32)}
+                        </option>
+                      ))}
+                    </select>
+
+                    <button
+                      type="button"
+                      disabled={!nextCue}
+                      onClick={() => nextCue && onQuickSelectCue(nextCue.id)}
+                      title="Câu tiếp theo"
+                      className="p-1.5 bg-[#171A21] hover:bg-[#20242E] disabled:opacity-30 border border-white/8 rounded text-[#D5D9E2] cursor-pointer disabled:cursor-not-allowed shrink-0"
+                    >
+                      <ChevronRight className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+
+                  {showFollowPlayhead && playheadCue && (
+                    <button
+                      type="button"
+                      onClick={() => onQuickSelectCue(playheadCue.id)}
+                      className="w-full py-1 px-2 text-[10.5px] font-medium text-[#38BDF8] bg-[#38BDF8]/10 hover:bg-[#38BDF8]/18 border border-[#38BDF8]/30 rounded cursor-pointer transition-colors truncate"
+                    >
+                      Nhảy tới câu đang phát trên màn hình (#{String(playheadIdx + 1).padStart(2, '0')})
+                    </button>
+                  )}
+                </div>
+              );
+            })()}
+
             {!selectedCue ? (
               <div className="py-12 text-center space-y-2">
                 <p className="text-sm font-medium text-[#D5D9E2]">Chưa chọn câu phụ đề</p>
                 <p className="text-xs text-[#8E95A5]">
-                  Chọn một câu bên trái hoặc trên timeline để sửa xuống dòng, nhấn màu từ và vị trí.
+                  Chọn một câu ngay ở danh sách trên hoặc trên timeline để sửa và nhấn màu từ.
                 </p>
               </div>
             ) : (
@@ -774,8 +824,7 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                       <button
                         type="button"
                         onClick={() => {
-                          setLastEmphasisPreset(null);
-                          saveLastEmphasisPreset(null);
+                          rememberEmphasisPreset(null);
                         }}
                         title="Quay lại mẫu nhấn mặc định của kiểu chữ"
                         className="text-[#8E95A5] hover:text-white shrink-0 cursor-pointer"

@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="112" fill="#0B0C0F"/>
-  <rect x="28" y="28" width="456" height="456" rx="92" fill="#13161E" stroke="#262B38" stroke-width="6"/>
-  <!-- Kinetic 'K' emblem -->
-  <rect x="136" y="128" width="52" height="256" rx="12" fill="#F4F5F7"/>
-  <polygon points="212,248 338,128 386,128 258,256 388,384 338,384" fill="#FF5A1F"/>
-  <rect x="136" y="408" width="248" height="14" rx="7" fill="#FF5A1F" opacity="0.45"/>
-</svg>

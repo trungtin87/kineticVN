@@ -19,8 +19,14 @@ import {
   SubtitleCue,
   TypographyConfig,
   WatermarkConfig,
+  WordStyleOverride,
 } from './types/studio';
 import { preloadWatermarkImage } from './engine/kineticRenderer';
+import {
+  loadLastEmphasisPreset,
+  resolveEmphasisTemplate,
+  saveLastEmphasisPreset,
+} from './utils/emphasisPreset';
 import {
   renderSoundscapeMixWavFile,
   SOUNDSCAPE_COMBOS,
@@ -127,6 +133,9 @@ export default function App() {
   const [bgAudioFile, setBgAudioFile] = useState<File | null>(null);
   const [bgAudioName, setBgAudioName] = useState<string | null>(null);
   const [isPreviewingSoundscape, setIsPreviewingSoundscape] = useState(false);
+  const [sharedEmphasisPreset, setSharedEmphasisPreset] = useState<WordStyleOverride | null>(() =>
+    loadLastEmphasisPreset()
+  );
 
   const [importOpen, setImportOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
@@ -1019,6 +1028,57 @@ export default function App() {
     [audioEnvelope, currentTimeSec, fontsTick]
   );
 
+  const handleChangeSharedEmphasisPreset = useCallback(
+    (preset: WordStyleOverride | null) => {
+      const clean = preset ? { ...preset, emphasized: true } : null;
+      setSharedEmphasisPreset(clean);
+      saveLastEmphasisPreset(clean);
+    },
+    []
+  );
+
+  const handleQuickSelectCue = useCallback(
+    (cueId: string) => {
+      setSelectedCueId(cueId);
+      const target = project.cues.find((c) => c.id === cueId);
+      if (target) {
+        seekTo(target.startSec + Math.min(0.35, (target.endSec - target.startSec) * 0.4));
+      }
+    },
+    [project.cues, seekTo]
+  );
+
+  const handleQuickToggleWord = useCallback(
+    (cueId: string, wordIdx: number) => {
+      const target = project.cues.find((c) => c.id === cueId);
+      if (!target) return;
+
+      const existing = target.wordStyles[wordIdx];
+      const nextStyles = { ...target.wordStyles };
+      if (existing?.emphasized) {
+        delete nextStyles[wordIdx];
+      } else {
+        const applied = resolveEmphasisTemplate(sharedEmphasisPreset, project.typography);
+        nextStyles[wordIdx] = applied;
+        handleChangeSharedEmphasisPreset(applied);
+      }
+
+      handleUpdateCue(cueId, { wordStyles: nextStyles });
+      setSelectedCueId(cueId);
+      if (currentTimeSec < target.startSec || currentTimeSec > target.endSec) {
+        seekTo(target.startSec + Math.min(0.35, (target.endSec - target.startSec) * 0.4));
+      }
+    },
+    [
+      project.cues,
+      project.typography,
+      sharedEmphasisPreset,
+      handleChangeSharedEmphasisPreset,
+      currentTimeSec,
+      seekTo,
+    ]
+  );
+
   const handleMobileTabSelect = (section: MobileSection) => {
     setMobileSection(section);
     if (section === 'cueEdit') {
@@ -1092,6 +1152,7 @@ export default function App() {
               }
             }
           }}
+          onQuickToggleWord={handleQuickToggleWord}
           onAddCue={handleAddCue}
           onDeleteCue={handleDeleteCue}
           onSplitCue={handleSplitCue}
@@ -1135,12 +1196,24 @@ export default function App() {
               { coalesceKey: 'drag-global-pos' }
             )
           }
+          onQuickToggleWord={handleQuickToggleWord}
+          onQuickSelectCue={handleQuickSelectCue}
+          onOpenCueEditor={(cueId) => {
+            handleQuickSelectCue(cueId);
+            setActiveTab('cue');
+            setMobileSection('cueEdit');
+          }}
         />
 
         <InspectorPanel
           activeTab={activeTab}
           onTabChange={setActiveTab}
           selectedCue={selectedCue}
+          cues={project.cues}
+          currentTimeSec={currentTimeSec}
+          onQuickSelectCue={handleQuickSelectCue}
+          sharedEmphasisPreset={sharedEmphasisPreset}
+          onChangeSharedEmphasisPreset={handleChangeSharedEmphasisPreset}
           typography={project.typography}
           motion={project.motion}
           background={project.background}
