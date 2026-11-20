@@ -142,11 +142,67 @@ export function balanceTwoLines(text: string): string {
   return `${words.slice(0, bestSplit).join(' ')}\n${words.slice(bestSplit).join(' ')}`;
 }
 
+function parseLineInlineEmphasis(
+  rawLine: string,
+  emphasisTemplate?: WordStyleOverride
+): { cleanedLine: string; emphasizedIndices: number[] } {
+  // Normalize whitespace just inside brackets: "[ từ ]" -> "[từ]"
+  const norm = rawLine.replace(/\[\s*([^\[\]]*?)\s*\]/g, '[$1]');
+  const bracketSpans: { start: number; end: number }[] = [];
+  const bracketRe = /\[([^\[\]]+)\]/g;
+  let bm: RegExpExecArray | null;
+  while ((bm = bracketRe.exec(norm)) !== null) {
+    bracketSpans.push({ start: bm.index, end: bm.index + bm[0].length });
+  }
+
+  const emphasizedIndices: number[] = [];
+  const tokenRe = /\S+/g;
+  let tm: RegExpExecArray | null;
+  let localWordIdx = 0;
+  const cleanedTokens: string[] = [];
+
+  while ((tm = tokenRe.exec(norm)) !== null) {
+    const tok = tm[0];
+    const tokStart = tm.index;
+    const tokEnd = tokStart + tok.length;
+
+    const inBracket = bracketSpans.some(
+      (sp) => tokEnd > sp.start && tokStart < sp.end
+    );
+    const starMatch = !inBracket ? tok.match(/^([("'“‘]*)\*([^*]+)\*([)"'”’,.;:!?…]*)$/) : null;
+
+    let cleanTok = tok;
+    if (inBracket) {
+      cleanTok = tok.replace(/[\[\]]/g, '');
+      if (cleanTok.length > 0) {
+        emphasizedIndices.push(localWordIdx);
+      }
+    } else if (starMatch) {
+      cleanTok = `${starMatch[1]}${starMatch[2]}${starMatch[3]}`;
+      emphasizedIndices.push(localWordIdx);
+    }
+
+    if (cleanTok.length > 0) {
+      cleanedTokens.push(cleanTok);
+      localWordIdx++;
+    }
+  }
+
+  void emphasisTemplate;
+  return {
+    cleanedLine: cleanedTokens.join(' '),
+    emphasizedIndices,
+  };
+}
+
 /**
  * Parses an SRT string into SubtitleCue[].
- * Also supports inline [word] or *word* syntax to auto-mark emphasis on import!
+ * Also supports inline [word], [multi word], or *word* syntax to auto-mark emphasis on import!
  */
-export function parseSrt(srtContent: string): SubtitleCue[] {
+export function parseSrt(
+  srtContent: string,
+  emphasisTemplate?: WordStyleOverride
+): SubtitleCue[] {
   const normalized = srtContent
     .replace(/^\uFEFF/, '')
     .replace(/\r\n/g, '\n')
@@ -162,7 +218,7 @@ export function parseSrt(srtContent: string): SubtitleCue[] {
     const lines = block.split('\n').map((l) => l.trimEnd());
     if (lines.length === 0) continue;
 
-    let timeLineIdx = lines.findIndex((l) => l.includes('-->'));
+    const timeLineIdx = lines.findIndex((l) => l.includes('-->'));
     if (timeLineIdx === -1) continue;
 
     const indexLine = timeLineIdx > 0 ? lines[timeLineIdx - 1].trim() : '';
@@ -184,20 +240,16 @@ export function parseSrt(srtContent: string): SubtitleCue[] {
     let flatIdx = 0;
 
     const cleanedLines = textLines.map((line) => {
-      const words = line.split(/\s+/).filter(Boolean);
-      const cleanedWords = words.map((w) => {
-        // Support *word* or [word] emphasis markers in imported SRT
-        const bracketMatch = w.match(/^\[(.+)\]$/);
-        const starMatch = w.match(/^\*(.+)\*$/);
-        if (bracketMatch || starMatch) {
-          wordStyles[flatIdx] = { emphasized: true };
-          flatIdx++;
-          return (bracketMatch?.[1] ?? starMatch?.[1]) || w;
-        }
-        flatIdx++;
-        return w;
-      });
-      return cleanedWords.join(' ');
+      const { cleanedLine, emphasizedIndices } = parseLineInlineEmphasis(line, emphasisTemplate);
+      const tokenCount = cleanedLine ? cleanedLine.split(/\s+/).filter(Boolean).length : 0;
+      for (const localIdx of emphasizedIndices) {
+        wordStyles[flatIdx + localIdx] = {
+          ...(emphasisTemplate || {}),
+          emphasized: true,
+        };
+      }
+      flatIdx += tokenCount;
+      return cleanedLine;
     });
 
     cues.push({
@@ -213,12 +265,406 @@ export function parseSrt(srtContent: string): SubtitleCue[] {
   return cues.sort((a, b) => a.startSec - b.startSec);
 }
 
-export function exportSrt(cues: SubtitleCue[]): string {
+export function exportSrt(
+  cues: SubtitleCue[],
+  includeEmphasisBrackets = false
+): string {
   return cues
     .map((cue, idx) => {
-      return `${idx + 1}\n${formatSrtTimestamp(cue.startSec)} --> ${formatSrtTimestamp(cue.endSec)}\n${cue.text}`;
+      const body = includeEmphasisBrackets
+        ? cuesToScriptText([cue]) || cue.text
+        : cue.text;
+      return `${idx + 1}\n${formatSrtTimestamp(cue.startSec)} --> ${formatSrtTimestamp(cue.endSec)}\n${body}`;
     })
     .join('\n\n');
+}
+
+/**
+ * Converts existing SubtitleCue[] into plain-text script lines (1 cue per line),
+ * wrapping contiguous emphasized words in [brackets] for fast editing.
+ */
+export function cuesToScriptText(cues: SubtitleCue[]): string {
+  return cues
+    .map((cue) => {
+      const { flatWords } = tokenizeCueText(cue.text);
+      if (flatWords.length === 0) return cue.text.replace(/\n+/g, ' ').trim();
+
+      const parts: string[] = [];
+      let i = 0;
+      while (i < flatWords.length) {
+        const isEmph = Boolean(cue.wordStyles[flatWords[i].wordIndex]?.emphasized);
+        if (!isEmph) {
+          parts.push(flatWords[i].word);
+          i++;
+        } else {
+          const group: string[] = [];
+          while (
+            i < flatWords.length &&
+            Boolean(cue.wordStyles[flatWords[i].wordIndex]?.emphasized)
+          ) {
+            group.push(flatWords[i].word);
+            i++;
+          }
+          parts.push(`[${group.join(' ')}]`);
+        }
+      }
+      return parts.join(' ');
+    })
+    .filter((line) => line.length > 0)
+    .join('\n');
+}
+
+export interface CursorLineToken {
+  word: string;
+  absStart: number;
+  absEnd: number;
+  emphasized: boolean;
+}
+
+export interface CursorLineInfo {
+  lineIndex: number;
+  totalLines: number;
+  lineText: string;
+  lineStart: number;
+  lineEnd: number;
+  activeTokenIdx: number;
+  tokens: CursorLineToken[];
+}
+
+export function getCursorLineInfo(text: string, cursorPos: number): CursorLineInfo {
+  const clamped = Math.max(0, Math.min(text.length, cursorPos));
+  const before = text.slice(0, clamped);
+  const lineIndex = before.split('\n').length - 1;
+  const lineStart = before.lastIndexOf('\n') + 1;
+  const nextNl = text.indexOf('\n', clamped);
+  const lineEnd = nextNl === -1 ? text.length : nextNl;
+  const lineText = text.slice(lineStart, lineEnd);
+  const totalLines = text.split('\n').length;
+
+  const bracketSpans: { start: number; end: number }[] = [];
+  const bracketRe = /\[([^\[\]]+)\]/g;
+  let bm: RegExpExecArray | null;
+  while ((bm = bracketRe.exec(lineText)) !== null) {
+    bracketSpans.push({
+      start: lineStart + bm.index,
+      end: lineStart + bm.index + bm[0].length,
+    });
+  }
+
+  const tokens: CursorLineToken[] = [];
+  const tokenRe = /\S+/g;
+  let tm: RegExpExecArray | null;
+  while ((tm = tokenRe.exec(lineText)) !== null) {
+    const absStart = lineStart + tm.index;
+    const absEnd = absStart + tm[0].length;
+    const emphasized = bracketSpans.some((sp) => absEnd > sp.start && absStart < sp.end);
+    tokens.push({
+      word: tm[0].replace(/[\[\]]/g, '') || tm[0],
+      absStart,
+      absEnd,
+      emphasized,
+    });
+  }
+
+  let activeTokenIdx = tokens.findIndex((t) => clamped >= t.absStart && clamped <= t.absEnd);
+  if (activeTokenIdx === -1 && tokens.length > 0) {
+    const nextIdx = tokens.findIndex((t) => t.absStart > clamped);
+    activeTokenIdx = nextIdx !== -1 ? nextIdx : tokens.length - 1;
+  }
+
+  return {
+    lineIndex,
+    totalLines,
+    lineText,
+    lineStart,
+    lineEnd,
+    activeTokenIdx,
+    tokens,
+  };
+}
+
+/**
+ * Wraps or unwraps the word at cursor (or highlighted phrase) in [square brackets].
+ * Keeps caret / selection focused cleanly so users can keep typing or toggling rapidly.
+ */
+export function toggleBracketAtCursor(
+  text: string,
+  selStart: number,
+  selEnd: number
+): {
+  nextText: string;
+  nextSelStart: number;
+  nextSelEnd: number;
+  action: 'wrapped' | 'unwrapped' | 'none';
+  targetText: string;
+} {
+  const start = Math.max(0, Math.min(text.length, Math.min(selStart, selEnd)));
+  const end = Math.max(0, Math.min(text.length, Math.max(selStart, selEnd)));
+
+  const lineStart = text.slice(0, start).lastIndexOf('\n') + 1;
+  const nextNl = text.indexOf('\n', start);
+  const lineEnd = nextNl === -1 ? text.length : nextNl;
+  const lineText = text.slice(lineStart, lineEnd);
+
+  const bracketSpans: { start: number; end: number }[] = [];
+  const bracketRe = /\[([^\[\]]+)\]/g;
+  let bm: RegExpExecArray | null;
+  while ((bm = bracketRe.exec(lineText)) !== null) {
+    bracketSpans.push({
+      start: lineStart + bm.index,
+      end: lineStart + bm.index + bm[0].length,
+    });
+  }
+
+  // Case A: User highlighted a range of text
+  if (end > start) {
+    // Clamp selection to the starting line if it accidentally crossed newline
+    const effectiveEnd = Math.min(end, lineEnd);
+    let trimStart = start;
+    let trimEnd = effectiveEnd;
+    while (trimStart < trimEnd && /\s/.test(text[trimStart])) trimStart++;
+    while (trimEnd > trimStart && /\s/.test(text[trimEnd - 1])) trimEnd--;
+
+    if (trimEnd <= trimStart) {
+      return {
+        nextText: text,
+        nextSelStart: start,
+        nextSelEnd: end,
+        action: 'none',
+        targetText: '',
+      };
+    }
+
+    // Expand partial word selection cleanly to whole token boundaries (unless it's [ or ])
+    while (trimStart > lineStart && /\S/.test(text[trimStart - 1]) && text[trimStart - 1] !== '[') {
+      trimStart--;
+    }
+    while (trimEnd < lineEnd && /\S/.test(text[trimEnd]) && text[trimEnd] !== ']') {
+      trimEnd++;
+    }
+
+    // Check if selection sits inside or wraps an existing [bracketed] span
+    const containingSpan = bracketSpans.find(
+      (sp) => trimEnd > sp.start && trimStart < sp.end
+    );
+    if (containingSpan) {
+      const inner = text.slice(containingSpan.start + 1, containingSpan.end - 1);
+      const nextText =
+        text.slice(0, containingSpan.start) + inner + text.slice(containingSpan.end);
+      return {
+        nextText,
+        nextSelStart: containingSpan.start,
+        nextSelEnd: containingSpan.start + inner.length,
+        action: 'unwrapped',
+        targetText: inner,
+      };
+    }
+
+    const rawSlice = text.slice(trimStart, trimEnd).replace(/[\[\]]/g, '');
+    if (!rawSlice.trim()) {
+      return {
+        nextText: text,
+        nextSelStart: start,
+        nextSelEnd: end,
+        action: 'none',
+        targetText: '',
+      };
+    }
+    const punctMatch = rawSlice.match(/^([("'“‘«]*)(.+?)([)"'”’».,;:!?…]*)$/);
+    const lead = punctMatch?.[1] || '';
+    const core = punctMatch?.[2] || rawSlice;
+    const trail = punctMatch?.[3] || '';
+    const wrapped = `${lead}[${core}]${trail}`;
+    const nextText = text.slice(0, trimStart) + wrapped + text.slice(trimEnd);
+    return {
+      nextText,
+      nextSelStart: trimStart + wrapped.length,
+      nextSelEnd: trimStart + wrapped.length,
+      action: 'wrapped',
+      targetText: core,
+    };
+  }
+
+  // Case B: Collapsed cursor -> detect word at cursor
+  const info = getCursorLineInfo(text, start);
+  if (info.tokens.length === 0 || info.activeTokenIdx < 0) {
+    return {
+      nextText: text,
+      nextSelStart: start,
+      nextSelEnd: end,
+      action: 'none',
+      targetText: '',
+    };
+  }
+
+  const tok = info.tokens[info.activeTokenIdx];
+  // Check if token belongs to an existing [span]
+  const span = bracketSpans.find((sp) => tok.absEnd > sp.start && tok.absStart < sp.end);
+  if (span) {
+    const inner = text.slice(span.start + 1, span.end - 1);
+    const nextText = text.slice(0, span.start) + inner + text.slice(span.end);
+    const cursorOut = Math.min(nextText.length, Math.max(span.start, start - 1));
+    return {
+      nextText,
+      nextSelStart: cursorOut,
+      nextSelEnd: cursorOut,
+      action: 'unwrapped',
+      targetText: inner,
+    };
+  }
+
+  // Wrap token while preserving leading/trailing quotes & punctuation outside brackets
+  const rawTok = text.slice(tok.absStart, tok.absEnd);
+  const punctMatch = rawTok.match(/^([("'“‘«]*)(.+?)([)"'”’».,;:!?…]*)$/);
+  const lead = punctMatch?.[1] || '';
+  const core = punctMatch?.[2] || rawTok;
+  const trail = punctMatch?.[3] || '';
+  const wrapped = `${lead}[${core}]${trail}`;
+
+  const nextText = text.slice(0, tok.absStart) + wrapped + text.slice(tok.absEnd);
+  const nextCursor = tok.absStart + wrapped.length;
+  return {
+    nextText,
+    nextSelStart: nextCursor,
+    nextSelEnd: nextCursor,
+    action: 'wrapped',
+    targetText: core,
+  };
+}
+
+/**
+ * Automatically splits plain-text script lines (1 Enter = 1 cue) and calibrates
+ * cue timestamps to match the project's audio duration and energy envelope.
+ */
+export function buildTimedCuesFromScript(
+  scriptText: string,
+  audioDurationSec: number,
+  audioEnvelope?: Float32Array | null,
+  emphasisTemplate?: WordStyleOverride
+): SubtitleCue[] {
+  const rawLines = scriptText
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+
+  if (rawLines.length === 0) return [];
+
+  const parsedLines = rawLines.map((line) => {
+    const { cleanedLine, emphasizedIndices } = parseLineInlineEmphasis(line, emphasisTemplate);
+    const words = cleanedLine.split(/\s+/).filter(Boolean);
+    const wordCount = Math.max(1, words.length);
+    const charCount = cleanedLine.replace(/\s+/g, '').length;
+    const pauseMarks = (cleanedLine.match(/[,.!?;:…]/g) || []).length;
+    // Natural speech weight (base lead + syllables/words + characters + punctuation breaths)
+    const weight = 0.42 + wordCount * 0.24 + charCount * 0.045 + pauseMarks * 0.22;
+    return {
+      cleanedLine: cleanedLine || line,
+      emphasizedIndices,
+      weight,
+    };
+  });
+
+  const safeAudioDur = Math.max(2.0, Number.isFinite(audioDurationSec) ? audioDurationSec : 12.0);
+  let activeStartSec = Math.min(0.15, safeAudioDur * 0.05);
+  let activeEndSec = Math.max(activeStartSec + 1.0, safeAudioDur - Math.min(0.15, safeAudioDur * 0.05));
+
+  const ENV_FPS = 60;
+  if (audioEnvelope && audioEnvelope.length > ENV_FPS) {
+    let peak = 0;
+    for (let i = 0; i < audioEnvelope.length; i++) {
+      if (audioEnvelope[i] > peak) peak = audioEnvelope[i];
+    }
+    if (peak > 0.02) {
+      const thresh = Math.max(0.02, peak * 0.08);
+      let firstIdx = 0;
+      while (firstIdx < audioEnvelope.length && audioEnvelope[firstIdx] < thresh) {
+        firstIdx++;
+      }
+      let lastIdx = audioEnvelope.length - 1;
+      while (lastIdx > firstIdx && audioEnvelope[lastIdx] < thresh) {
+        lastIdx--;
+      }
+
+      const detectedStart = Math.max(0, firstIdx / ENV_FPS - 0.12);
+      const detectedEnd = Math.min(safeAudioDur, lastIdx / ENV_FPS + 0.28);
+      if (detectedEnd - detectedStart >= Math.max(1.2, safeAudioDur * 0.35)) {
+        activeStartSec = Math.min(detectedStart, safeAudioDur * 0.4);
+        activeEndSec = Math.max(activeStartSec + 1.0, detectedEnd);
+      }
+    }
+  }
+
+  const totalSpan = Math.max(rawLines.length * 0.35, activeEndSec - activeStartSec);
+  const totalWeight = parsedLines.reduce((sum, item) => sum + item.weight, 0) || parsedLines.length;
+  const gapSec = totalSpan / parsedLines.length > 0.9 ? 0.05 : 0.0;
+
+  // Initial proportional split boundaries
+  const boundaries: number[] = [activeStartSec];
+  let accWeight = 0;
+  for (let i = 0; i < parsedLines.length - 1; i++) {
+    accWeight += parsedLines[i].weight;
+    const rawBound = activeStartSec + (accWeight / totalWeight) * totalSpan;
+    boundaries.push(rawBound);
+  }
+  boundaries.push(activeStartSec + totalSpan);
+
+  // Subtle energy-valley snapping so cue transitions fall cleanly between spoken phrases
+  if (audioEnvelope && audioEnvelope.length > ENV_FPS * 2) {
+    const minCueDur = Math.min(0.45, (totalSpan / parsedLines.length) * 0.55);
+    for (let i = 1; i < boundaries.length - 1; i++) {
+      const b = boundaries[i];
+      const leftBound = boundaries[i - 1] + minCueDur;
+      const rightBound = boundaries[i + 1] - minCueDur;
+      if (rightBound <= leftBound) continue;
+
+      const searchFrom = Math.max(leftBound, b - 0.25);
+      const searchTo = Math.min(rightBound, b + 0.25);
+      const idxStart = Math.max(0, Math.floor(searchFrom * ENV_FPS));
+      const idxEnd = Math.min(audioEnvelope.length - 1, Math.ceil(searchTo * ENV_FPS));
+
+      let bestIdx = -1;
+      let bestScore = Infinity;
+      for (let k = idxStart; k <= idxEnd; k++) {
+        // Lightly prefer staying near proportional center while preferring low energy valleys
+        const distPenalty = Math.abs(k / ENV_FPS - b) * 0.08;
+        const score = audioEnvelope[k] + distPenalty;
+        if (score < bestScore) {
+          bestScore = score;
+          bestIdx = k;
+        }
+      }
+      if (bestIdx !== -1) {
+        boundaries[i] = Math.max(leftBound, Math.min(rightBound, bestIdx / ENV_FPS));
+      }
+    }
+  }
+
+  const now = Date.now();
+  return parsedLines.map((item, idx) => {
+    const rawStart = boundaries[idx];
+    const rawEnd = boundaries[idx + 1] - (idx < parsedLines.length - 1 ? gapSec : 0);
+    const startSec = Number(rawStart.toFixed(2));
+    const endSec = Number(Math.max(rawStart + 0.25, rawEnd).toFixed(2));
+
+    const wordStyles: Record<number, WordStyleOverride> = {};
+    for (const wIdx of item.emphasizedIndices) {
+      wordStyles[wIdx] = {
+        ...(emphasisTemplate || {}),
+        emphasized: true,
+      };
+    }
+
+    return {
+      id: `cue-script-${now}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
+      index: idx + 1,
+      startSec,
+      endSec,
+      text: item.cleanedLine,
+      wordStyles,
+    };
+  });
 }
 
 export function distributeWordTimingsEvenly(cue: SubtitleCue): WordTiming[] {

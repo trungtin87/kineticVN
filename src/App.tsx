@@ -709,7 +709,8 @@ export default function App() {
 
   const handleUploadSrtFile = async (file: File) => {
     const text = await file.text();
-    const parsed = parseSrt(text);
+    const tpl = resolveEmphasisTemplate(sharedEmphasisPreset, project.typography);
+    const parsed = parseSrt(text, tpl);
     if (parsed.length > 0) {
       setProject((p) => ({ ...p, cues: parsed }));
       setSelectedCueId(parsed[0].id);
@@ -718,7 +719,16 @@ export default function App() {
   };
 
   const handleImportSrtText = (srtText: string) => {
-    const parsed = parseSrt(srtText);
+    const tpl = resolveEmphasisTemplate(sharedEmphasisPreset, project.typography);
+    const parsed = parseSrt(srtText, tpl);
+    if (parsed.length > 0) {
+      setProject((p) => ({ ...p, cues: parsed }));
+      setSelectedCueId(parsed[0].id);
+      seekTo(parsed[0].startSec + 0.05);
+    }
+  };
+
+  const handleImportCues = (parsed: SubtitleCue[]) => {
     if (parsed.length > 0) {
       setProject((p) => ({ ...p, cues: parsed }));
       setSelectedCueId(parsed[0].id);
@@ -1433,7 +1443,12 @@ export default function App() {
         <ImportSrtModal
           isOpen={importOpen}
           cues={project.cues}
+          audioName={audioName}
+          audioDurationSec={audioDurationSec}
+          audioEnvelope={audioEnvelope}
+          emphasisTemplate={resolveEmphasisTemplate(sharedEmphasisPreset, project.typography)}
           onClose={() => setImportOpen(false)}
+          onImportCues={handleImportCues}
           onImportSrtText={handleImportSrtText}
           onImportWordJson={handleImportWordJson}
           onUploadAudio={handleUploadAudioFile}
