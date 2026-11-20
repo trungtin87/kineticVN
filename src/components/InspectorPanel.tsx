@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   AlignCenter,
   AlignLeft,
@@ -76,6 +76,8 @@ import {
   distributeWordTimingsEvenly,
   findWordIndicesInTextRange,
   formatTimecodeShort,
+  getCueSplitPointFromCursor,
+  stepCueWordBoundaryCursor,
   tokenizeCueText,
 } from '../utils/srtParser';
 import {
@@ -109,7 +111,7 @@ interface InspectorPanelProps {
   isPreviewingSoundscape?: boolean;
   canMergeNextCue?: boolean;
   onUpdateCue: (cueId: string, patch: Partial<SubtitleCue>, coalesceKey?: string) => void;
-  onSplitCue?: (cueId: string) => void;
+  onSplitCue?: (cueId: string, splitWordCount?: number) => void;
   onMergeNextCue?: (cueId: string) => void;
   onUpdateTypography: (patch: Partial<TypographyConfig>, coalesceKey?: string) => void;
   onUpdateMotion: (patch: Partial<MotionConfig>, coalesceKey?: string) => void;
@@ -203,7 +205,13 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
 }) => {
   const [activeWordIdx, setActiveWordIdx] = useState<number | null>(null);
   const [showWordTimings, setShowWordTimings] = useState(false);
+  const [showGapSplitBar, setShowGapSplitBar] = useState(false);
   const [textSelection, setTextSelection] = useState<{ start: number; end: number } | null>(null);
+  const [cueCursorPos, setCueCursorPos] = useState<number>(0);
+  const [cueCursorBump, setCueCursorBump] = useState<number>(0);
+  const cueTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const lastCueCursorRef = useRef<number>(0);
+  const pendingCueCursorRef = useRef<number | null>(null);
   const [localEmphasisPreset, setLocalEmphasisPreset] = useState<WordStyleOverride | null>(() =>
     loadLastEmphasisPreset()
   );
@@ -227,7 +235,64 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
     setTextSelection(null);
     setActiveWordIdx(null);
     setChipDragRange(null);
+    setShowGapSplitBar(false);
+    lastCueCursorRef.current = 0;
+    setCueCursorPos(0);
   }, [selectedCue?.id]);
+
+  const syncCueCursorFromEl = (el: HTMLTextAreaElement | null) => {
+    if (!el) return;
+    const s = el.selectionStart ?? 0;
+    const end = el.selectionEnd ?? 0;
+    lastCueCursorRef.current = s;
+    setCueCursorPos((prev) => (prev === s ? prev : s));
+    setTextSelection(end > s ? { start: s, end } : null);
+  };
+
+  useEffect(() => {
+    if (activeTab !== 'cue') return;
+    const onSelectionChange = () => {
+      const el = cueTextareaRef.current;
+      if (el && document.activeElement === el) {
+        syncCueCursorFromEl(el);
+      }
+    };
+    document.addEventListener('selectionchange', onSelectionChange);
+    return () => document.removeEventListener('selectionchange', onSelectionChange);
+  }, [activeTab]);
+
+  useLayoutEffect(() => {
+    const pending = pendingCueCursorRef.current;
+    if (pending === null) return;
+    pendingCueCursorRef.current = null;
+    const el = cueTextareaRef.current;
+    if (!el) return;
+    if (document.activeElement !== el) {
+      el.focus({ preventScroll: true });
+    }
+    const clamped = Math.max(0, Math.min(el.value.length, pending));
+    try {
+      el.setSelectionRange(clamped, clamped);
+    } catch {
+      // Ignore unselectable element states
+    }
+    lastCueCursorRef.current = clamped;
+  }, [cueCursorPos, cueCursorBump, selectedCue?.text]);
+
+  const moveCueCursorTo = (pos: number) => {
+    if (!selectedCue) return;
+    const clamped = Math.max(0, Math.min(selectedCue.text.length, pos));
+    pendingCueCursorRef.current = clamped;
+    lastCueCursorRef.current = clamped;
+    setCueCursorPos(clamped);
+    setCueCursorBump((v) => v + 1);
+    setTextSelection(null);
+  };
+
+  const cueSplitInfo = useMemo(
+    () => (selectedCue ? getCueSplitPointFromCursor(selectedCue.text, cueCursorPos) : null),
+    [selectedCue, cueCursorPos]
+  );
 
   const resolvedEmphasisTemplate = useMemo<WordStyleOverride>(
     () => resolveEmphasisTemplate(lastEmphasisPreset, typography),
@@ -513,24 +578,24 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                   </div>
 
                   <textarea
+                    ref={cueTextareaRef}
                     rows={3}
                     value={selectedCue.text}
-                    onChange={(e) => onUpdateCue(selectedCue.id, { text: e.target.value })}
-                    onSelect={(e) => {
-                      const s = e.currentTarget.selectionStart ?? 0;
-                      const end = e.currentTarget.selectionEnd ?? 0;
-                      setTextSelection(end > s ? { start: s, end } : null);
+                    onChange={(e) => {
+                      const el = e.currentTarget;
+                      lastCueCursorRef.current = el.selectionStart ?? 0;
+                      onUpdateCue(selectedCue.id, { text: el.value });
+                      syncCueCursorFromEl(el);
                     }}
-                    onMouseUp={(e) => {
-                      const s = e.currentTarget.selectionStart ?? 0;
-                      const end = e.currentTarget.selectionEnd ?? 0;
-                      setTextSelection(end > s ? { start: s, end } : null);
+                    onSelect={(e) => syncCueCursorFromEl(e.currentTarget)}
+                    onClick={(e) => syncCueCursorFromEl(e.currentTarget)}
+                    onMouseUp={(e) => syncCueCursorFromEl(e.currentTarget)}
+                    onTouchEnd={(e) => {
+                      const el = e.currentTarget;
+                      syncCueCursorFromEl(el);
+                      window.requestAnimationFrame(() => syncCueCursorFromEl(el));
                     }}
-                    onKeyUp={(e) => {
-                      const s = e.currentTarget.selectionStart ?? 0;
-                      const end = e.currentTarget.selectionEnd ?? 0;
-                      setTextSelection(end > s ? { start: s, end } : null);
-                    }}
+                    onKeyUp={(e) => syncCueCursorFromEl(e.currentTarget)}
                     onKeyDown={(e) => {
                       if (
                         (e.ctrlKey || e.metaKey) &&
@@ -544,6 +609,116 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                     className="w-full bg-[#171A21] border border-white/10 focus:border-[#FF5A1F] rounded-md p-2.5 text-sm text-[#F4F5F7] leading-relaxed focus:outline-none resize-y"
                     placeholder="Nhập chữ, bôi đen cụm từ để nhấn nhanh, hoặc Enter để xuống dòng..."
                   />
+
+                  {/* Cursor Split Control Bar (works smoothly on both phone touch & PC) */}
+                  {onSplitCue && cueSplitInfo && cueSplitInfo.words.length >= 2 && (
+                    <div className="p-2 bg-[#0E1015] border border-white/8 rounded-md space-y-1.5">
+                      <div className="flex items-center justify-between gap-1.5">
+                        <div className="flex items-center gap-1 bg-[#171A21] border border-white/10 rounded overflow-hidden shrink-0">
+                          <button
+                            type="button"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() =>
+                              moveCueCursorTo(
+                                stepCueWordBoundaryCursor(
+                                  selectedCue.text,
+                                  lastCueCursorRef.current,
+                                  -1
+                                )
+                              )
+                            }
+                            title="Dịch điểm ngắt sang từ trước"
+                            className="px-1.5 py-1 text-[11px] text-[#D5D9E2] hover:bg-[#222733] hover:text-white flex items-center gap-0.5 cursor-pointer border-r border-white/8"
+                          >
+                            <ChevronLeft className="w-3.5 h-3.5 text-[#38BDF8]" />
+                            <span>Từ</span>
+                          </button>
+                          <button
+                            type="button"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() =>
+                              moveCueCursorTo(
+                                stepCueWordBoundaryCursor(
+                                  selectedCue.text,
+                                  lastCueCursorRef.current,
+                                  1
+                                )
+                              )
+                            }
+                            title="Dịch điểm ngắt sang từ sau"
+                            className="px-1.5 py-1 text-[11px] text-[#D5D9E2] hover:bg-[#222733] hover:text-white flex items-center gap-0.5 cursor-pointer"
+                          >
+                            <span>Từ</span>
+                            <ChevronRight className="w-3.5 h-3.5 text-[#38BDF8]" />
+                          </button>
+                        </div>
+
+                        <span className="text-[11px] truncate min-w-0 flex-1 text-center">
+                          {cueSplitInfo.canSplit ? (
+                            <span className="text-[#34D399]">
+                              «{cueSplitInfo.beforeWord}» ✂ «{cueSplitInfo.afterWord}»
+                            </span>
+                          ) : (
+                            <span className="text-[#8E95A5]">
+                              Bấm ◀/▶ Từ hoặc chạm giữa 2 từ
+                            </span>
+                          )}
+                        </span>
+
+                        <button
+                          type="button"
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => setShowGapSplitBar((v) => !v)}
+                          className={`px-2 py-1 text-[10.5px] font-medium rounded border cursor-pointer shrink-0 transition-colors ${
+                            showGapSplitBar
+                              ? 'bg-[#34D399]/20 border-[#34D399] text-[#34D399]'
+                              : 'bg-[#171A21] border-white/10 text-[#D5D9E2] hover:border-white/25'
+                          }`}
+                        >
+                          Chạm ✂
+                        </button>
+                      </div>
+
+                      {showGapSplitBar && (
+                        <div className="flex flex-nowrap overflow-x-auto items-center gap-1 pt-1 border-t border-white/6 pb-0.5">
+                          {cueSplitInfo.words.map((w, wIdx) => (
+                            <React.Fragment key={`${w.start}-${wIdx}`}>
+                              <button
+                                type="button"
+                                onMouseDown={(e) => e.preventDefault()}
+                                onClick={() =>
+                                  moveCueCursorTo(
+                                    wIdx < cueSplitInfo.words.length - 1
+                                      ? w.end
+                                      : cueSplitInfo.words[cueSplitInfo.words.length - 2].end
+                                  )
+                                }
+                                className="px-2 py-1 text-[11px] rounded bg-[#171A21] border border-white/10 text-[#D5D9E2] hover:border-white/30 whitespace-nowrap shrink-0 cursor-pointer"
+                              >
+                                {w.word}
+                              </button>
+                              {wIdx < cueSplitInfo.words.length - 1 && (
+                                <button
+                                  type="button"
+                                  disabled={selectedCue.endSec - selectedCue.startSec < 0.24}
+                                  onMouseDown={(e) => e.preventDefault()}
+                                  onClick={() => onSplitCue(selectedCue.id, wIdx + 1)}
+                                  title={`Tách câu ngay sau "${w.word}"`}
+                                  className={`px-1.5 py-1 rounded border text-[10.5px] flex items-center justify-center cursor-pointer disabled:opacity-35 shrink-0 transition-colors ${
+                                    cueSplitInfo.canSplit && cueSplitInfo.splitWordCount === wIdx + 1
+                                      ? 'bg-[#34D399] border-[#34D399] text-[#0B0C0F] font-bold'
+                                      : 'bg-[#16221E] border-[#34D399]/40 text-[#34D399] hover:bg-[#34D399] hover:text-[#0B0C0F]'
+                                  }`}
+                                >
+                                  <Scissors className="w-3 h-3" />
+                                </button>
+                              )}
+                            </React.Fragment>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   {selectedTextWordIndices.length > 0 && (
                     <div className="px-2.5 py-2 bg-[#1B1715] border border-[#FF5A1F]/45 rounded-md flex items-center justify-between gap-2">
@@ -616,17 +791,37 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
 
                   {(onSplitCue || onMergeNextCue) && (
                     <div className="grid grid-cols-2 gap-1.5">
-                      {onSplitCue && (
-                        <button
-                          type="button"
-                          disabled={selectedCue.endSec - selectedCue.startSec < 0.35}
-                          onClick={() => onSplitCue(selectedCue.id)}
-                          className="px-2.5 py-1.5 bg-[#171A21] hover:bg-[#20242E] disabled:opacity-35 border border-white/10 rounded text-[11px] text-[#E2E5EC] flex items-center justify-center gap-1.5 cursor-pointer disabled:cursor-not-allowed"
-                        >
-                          <Scissors className="w-3 h-3 text-[#FF5A1F]" />
-                          <span>Tách câu tại con trỏ</span>
-                        </button>
-                      )}
+                      {onSplitCue && (() => {
+                        const canCursorSplit = Boolean(
+                          cueSplitInfo?.canSplit &&
+                            selectedCue.endSec - selectedCue.startSec >= 0.24
+                        );
+                        return (
+                          <button
+                            type="button"
+                            onMouseDown={(e) => e.preventDefault()}
+                            disabled={!canCursorSplit}
+                            onClick={() => {
+                              if (canCursorSplit && cueSplitInfo) {
+                                onSplitCue(selectedCue.id, cueSplitInfo.splitWordCount);
+                              }
+                            }}
+                            title={
+                              cueSplitInfo?.canSplit
+                                ? `Tách câu sau "${cueSplitInfo.beforeWord}"`
+                                : 'Đặt con trỏ giữa 2 từ hoặc dùng ◀/▶ Từ để chọn điểm tách'
+                            }
+                            className="px-2.5 py-1.5 bg-[#171A21] hover:bg-[#20242E] disabled:opacity-35 border border-white/10 rounded text-[11px] text-[#E2E5EC] flex items-center justify-center gap-1.5 cursor-pointer disabled:cursor-not-allowed min-w-0"
+                          >
+                            <Scissors className="w-3 h-3 text-[#FF5A1F] shrink-0" />
+                            <span className="truncate">
+                              {cueSplitInfo?.canSplit
+                                ? `Tách sau "${cueSplitInfo.beforeWord}"`
+                                : 'Tách câu tại con trỏ'}
+                            </span>
+                          </button>
+                        );
+                      })()}
                       {onMergeNextCue && (
                         <button
                           type="button"
@@ -634,7 +829,7 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                           onClick={() => onMergeNextCue(selectedCue.id)}
                           className="px-2.5 py-1.5 bg-[#171A21] hover:bg-[#20242E] disabled:opacity-35 border border-white/10 rounded text-[11px] text-[#E2E5EC] flex items-center justify-center gap-1.5 cursor-pointer disabled:cursor-not-allowed"
                         >
-                          <Combine className="w-3 h-3 text-[#38BDF8]" />
+                          <Combine className="w-3 h-3 text-[#38BDF8] shrink-0" />
                           <span>Gộp với câu sau</span>
                         </button>
                       )}

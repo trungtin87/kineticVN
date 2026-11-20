@@ -275,7 +275,7 @@ export const CueListPanel: React.FC<CueListPanelProps> = ({
                           e.stopPropagation();
                           onSplitCue(cue.id);
                         }}
-                        title="Tách câu tại con trỏ / chia đôi"
+                        title="Tách câu tại kim phát / chia đôi"
                         className="p-1 text-[#7C8496] hover:text-[#FF5A1F] cursor-pointer"
                       >
                         <Scissors className="w-3.5 h-3.5" />

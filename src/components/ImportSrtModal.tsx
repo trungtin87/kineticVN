@@ -1,8 +1,10 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   AlignLeft,
   Braces,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   ChevronUp,
   Code2,
   CornerDownLeft,
@@ -11,6 +13,7 @@ import {
   FolderOpen,
   Highlighter,
   Music,
+  Scissors,
   Sparkles,
   X,
 } from 'lucide-react';
@@ -22,10 +25,14 @@ import {
   formatTimecodeShort,
   getCursorLineInfo,
   parseSrt,
+  previewScriptSplitAtCursor,
+  splitScriptAtCursor,
+  stepScriptCursorByWord,
   toggleBracketAtCursor,
 } from '../utils/srtParser';
 
 type EditorMode = 'script' | 'srt';
+type ChipActionMode = 'bracket' | 'split';
 
 interface ImportSrtModalProps {
   isOpen: boolean;
@@ -55,22 +62,85 @@ export const ImportSrtModal: React.FC<ImportSrtModalProps> = ({
   onUploadAudio,
 }) => {
   const [mode, setMode] = useState<EditorMode>('script');
+  const [chipMode, setChipMode] = useState<ChipActionMode>('bracket');
   const [scriptText, setScriptText] = useState(() => cuesToScriptText(cues));
   const [srtText, setSrtText] = useState(() => exportSrt(cues, true));
   const [selection, setSelection] = useState<{ start: number; end: number }>({
     start: 0,
     end: 0,
   });
+  const [cursorBump, setCursorBump] = useState(0);
   const [showMobileFiles, setShowMobileFiles] = useState(false);
   const [jsonError, setJsonError] = useState<string | null>(null);
 
   const scriptTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const srtTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  // Persists the most recent valid caret/selection across touch blurs on mobile
+  const lastValidSelectionRef = useRef<{ start: number; end: number }>({ start: 0, end: 0 });
+  // Queues synchronous selection restoration immediately after React commits text/mode changes
+  const pendingSelectionRef = useRef<{ start: number; end: number; focus?: boolean } | null>(null);
 
   const activeText = mode === 'script' ? scriptText : srtText;
+
+  const updateSelectionSafe = (start: number, end: number, textLen: number) => {
+    const s = Math.max(0, Math.min(textLen, start));
+    const e = Math.max(0, Math.min(textLen, end));
+    lastValidSelectionRef.current = { start: s, end: e };
+    setSelection((prev) => (prev.start === s && prev.end === e ? prev : { start: s, end: e }));
+  };
+
+  const syncSelectionFromEl = (el: HTMLTextAreaElement | null) => {
+    if (!el) return;
+    const s = el.selectionStart ?? 0;
+    const e = el.selectionEnd ?? 0;
+    updateSelectionSafe(s, e, el.value.length);
+  };
+
+  // Track native selectionchange so mobile touch caret drags (Android/iOS) update React live
+  useEffect(() => {
+    if (!isOpen) return;
+    const onSelectionChange = () => {
+      const target = mode === 'script' ? scriptTextareaRef.current : srtTextareaRef.current;
+      if (target && document.activeElement === target) {
+        syncSelectionFromEl(target);
+      }
+    };
+    document.addEventListener('selectionchange', onSelectionChange);
+    return () => document.removeEventListener('selectionchange', onSelectionChange);
+  }, [isOpen, mode]);
+
+  // Synchronously restore selection range right after DOM commit so caret never jumps to 0 or end
+  useLayoutEffect(() => {
+    const pending = pendingSelectionRef.current;
+    if (!pending) return;
+    pendingSelectionRef.current = null;
+    const target = mode === 'script' ? scriptTextareaRef.current : srtTextareaRef.current;
+    if (!target) return;
+    if (pending.focus !== false && document.activeElement !== target) {
+      target.focus({ preventScroll: true });
+    }
+    const maxLen = target.value.length;
+    const s = Math.max(0, Math.min(maxLen, pending.start));
+    const e = Math.max(0, Math.min(maxLen, pending.end));
+    try {
+      target.setSelectionRange(s, e);
+    } catch {
+      // Ignore if textarea is not selectable in current browser state
+    }
+    lastValidSelectionRef.current = { start: s, end: e };
+  }, [scriptText, srtText, mode, selection, cursorBump]);
+
   const cursorLineInfo = useMemo(
     () => getCursorLineInfo(activeText, selection.start),
     [activeText, selection.start]
+  );
+
+  const splitPreview = useMemo(
+    () =>
+      mode === 'script'
+        ? previewScriptSplitAtCursor(scriptText, selection.start, selection.end)
+        : null,
+    [mode, scriptText, selection.start, selection.end]
   );
 
   const calibratedCues = useMemo(
@@ -84,66 +154,109 @@ export const ImportSrtModal: React.FC<ImportSrtModalProps> = ({
     [scriptText, audioDurationSec, audioEnvelope, emphasisTemplate]
   );
 
+  // Map current lineIndex to calibratedCue index (skipping any blank lines above cursor)
+  const activeCalibratedCueIdx = useMemo(() => {
+    if (mode !== 'script') return -1;
+    const lines = scriptText.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+    if ((lines[cursorLineInfo.lineIndex] ?? '').trim().length === 0) return -1;
+    let nonEmptyBefore = 0;
+    for (let i = 0; i < cursorLineInfo.lineIndex; i++) {
+      if ((lines[i] ?? '').trim().length > 0) nonEmptyBefore++;
+    }
+    return nonEmptyBefore;
+  }, [mode, scriptText, cursorLineInfo.lineIndex]);
+
   if (!isOpen) return null;
 
-  const syncSelectionFromEl = (el: HTMLTextAreaElement) => {
-    setSelection({
-      start: el.selectionStart ?? 0,
-      end: el.selectionEnd ?? 0,
-    });
+  const getCurrentRange = (): { start: number; end: number } => {
+    const isScript = mode === 'script';
+    const currentText = isScript ? scriptText : srtText;
+    const refEl = isScript ? scriptTextareaRef.current : srtTextareaRef.current;
+
+    if (refEl && document.activeElement === refEl) {
+      const s = refEl.selectionStart ?? lastValidSelectionRef.current.start;
+      const e = refEl.selectionEnd ?? lastValidSelectionRef.current.end;
+      return {
+        start: Math.max(0, Math.min(currentText.length, s)),
+        end: Math.max(0, Math.min(currentText.length, e)),
+      };
+    }
+
+    return {
+      start: Math.max(0, Math.min(currentText.length, lastValidSelectionRef.current.start)),
+      end: Math.max(0, Math.min(currentText.length, lastValidSelectionRef.current.end)),
+    };
+  };
+
+  const applyCursorMove = (nextPos: number, endPos = nextPos) => {
+    const isScript = mode === 'script';
+    const currentText = isScript ? scriptText : srtText;
+    const s = Math.max(0, Math.min(currentText.length, nextPos));
+    const e = Math.max(0, Math.min(currentText.length, endPos));
+    pendingSelectionRef.current = { start: s, end: e, focus: true };
+    updateSelectionSafe(s, e, currentText.length);
+    setCursorBump((v) => v + 1);
+  };
+
+  const handleStepWord = (direction: -1 | 1) => {
+    const isScript = mode === 'script';
+    const currentText = isScript ? scriptText : srtText;
+    const { start } = getCurrentRange();
+    const nextPos = stepScriptCursorByWord(currentText, start, direction);
+    applyCursorMove(nextPos);
   };
 
   const applyToggleBracket = (customStart?: number, customEnd?: number) => {
     const isScript = mode === 'script';
     const currentText = isScript ? scriptText : srtText;
-    const refEl = isScript ? scriptTextareaRef.current : srtTextareaRef.current;
+    const fallback = getCurrentRange();
 
-    const s = customStart !== undefined ? customStart : refEl?.selectionStart ?? selection.start;
-    const e = customEnd !== undefined ? customEnd : refEl?.selectionEnd ?? selection.end;
+    const s = customStart !== undefined ? customStart : fallback.start;
+    const e = customEnd !== undefined ? customEnd : fallback.end;
 
     const res = toggleBracketAtCursor(currentText, s, e);
     if (res.action === 'none') return;
 
+    pendingSelectionRef.current = {
+      start: res.nextSelStart,
+      end: res.nextSelEnd,
+      focus: true,
+    };
     if (isScript) {
       setScriptText(res.nextText);
     } else {
       setSrtText(res.nextText);
     }
-    setSelection({ start: res.nextSelStart, end: res.nextSelEnd });
-
-    window.requestAnimationFrame(() => {
-      const target = isScript ? scriptTextareaRef.current : srtTextareaRef.current;
-      if (target) {
-        target.focus();
-        target.setSelectionRange(res.nextSelStart, res.nextSelEnd);
-      }
-    });
+    updateSelectionSafe(res.nextSelStart, res.nextSelEnd, res.nextText.length);
   };
 
-  const handleInsertSplitNewline = () => {
+  const handleInsertSplitNewline = (customStart?: number, customEnd?: number) => {
     const isScript = mode === 'script';
-    const refEl = isScript ? scriptTextareaRef.current : srtTextareaRef.current;
     const currentText = isScript ? scriptText : srtText;
-    const start = refEl?.selectionStart ?? selection.start;
-    const end = refEl?.selectionEnd ?? selection.end;
-
-    const nextText = currentText.slice(0, start) + '\n' + currentText.slice(end);
-    const nextPos = start + 1;
+    const fallback = getCurrentRange();
+    const start = customStart !== undefined ? customStart : fallback.start;
+    const end = customEnd !== undefined ? customEnd : fallback.end;
 
     if (isScript) {
-      setScriptText(nextText);
+      const res = splitScriptAtCursor(currentText, start, end);
+      pendingSelectionRef.current = {
+        start: res.nextCursor,
+        end: res.nextCursor,
+        focus: true,
+      };
+      setScriptText(res.nextText);
+      updateSelectionSafe(res.nextCursor, res.nextCursor, res.nextText.length);
     } else {
+      const nextText = currentText.slice(0, start) + '\n' + currentText.slice(end);
+      const nextPos = start + 1;
+      pendingSelectionRef.current = {
+        start: nextPos,
+        end: nextPos,
+        focus: true,
+      };
       setSrtText(nextText);
+      updateSelectionSafe(nextPos, nextPos, nextText.length);
     }
-    setSelection({ start: nextPos, end: nextPos });
-
-    window.requestAnimationFrame(() => {
-      const target = isScript ? scriptTextareaRef.current : srtTextareaRef.current;
-      if (target) {
-        target.focus();
-        target.setSelectionRange(nextPos, nextPos);
-      }
-    });
   };
 
   const handleSwitchMode = (nextMode: EditorMode) => {
@@ -158,6 +271,8 @@ export const ImportSrtModal: React.FC<ImportSrtModalProps> = ({
         setScriptText(cuesToScriptText(parsed));
       }
     }
+    pendingSelectionRef.current = { start: 0, end: 0, focus: false };
+    lastValidSelectionRef.current = { start: 0, end: 0 };
     setSelection({ start: 0, end: 0 });
     setMode(nextMode);
   };
@@ -191,6 +306,11 @@ export const ImportSrtModal: React.FC<ImportSrtModalProps> = ({
       ? `Bỏ [${activeWordToken.word}]`
       : `Bọc [${activeWordToken.word}]`
     : 'Bọc [từ]';
+
+  const splitButtonLabel =
+    mode === 'script' && splitPreview?.canSplitSentence
+      ? `Tách sau "${splitPreview.beforeWord}"`
+      : 'Tách câu';
 
   const avgCueDuration =
     calibratedCues.length > 0
@@ -264,7 +384,7 @@ export const ImportSrtModal: React.FC<ImportSrtModalProps> = ({
 
         {/* Modal Body */}
         <div className="p-2.5 sm:p-5 flex flex-col gap-2 sm:gap-3 min-h-0 flex-1 overflow-y-auto">
-          {/* File Pickers Row (collapsible on small mobile screens to save typing height) */}
+          {/* File Pickers Row */}
           <div className={`${showMobileFiles ? 'grid' : 'hidden'} sm:grid grid-cols-1 sm:grid-cols-3 gap-1.5 sm:gap-2 shrink-0`}>
             <label className="flex items-center justify-center gap-2 py-2 px-3 bg-[#1A1E28] hover:bg-[#222735] border border-white/10 rounded-md cursor-pointer text-xs font-medium text-[#E2E5EC]">
               <FileText className="w-4 h-4 text-[#FF5A1F] shrink-0" />
@@ -286,6 +406,8 @@ export const ImportSrtModal: React.FC<ImportSrtModalProps> = ({
                       setScriptText(raw);
                       setMode('script');
                     }
+                    lastValidSelectionRef.current = { start: 0, end: 0 };
+                    setSelection({ start: 0, end: 0 });
                     setShowMobileFiles(false);
                   }
                   e.target.value = '';
@@ -348,44 +470,62 @@ export const ImportSrtModal: React.FC<ImportSrtModalProps> = ({
             </p>
           )}
 
-          {/* Cursor-aware Quick Emphasis & Split Action Bar */}
-          <div className="p-1.5 sm:p-2.5 bg-[#0E1015] border border-white/10 rounded-md flex items-center justify-between gap-1.5 shrink-0">
-            <div className="flex items-center gap-1.5 min-w-0">
+          {/* Cursor-aware Quick Emphasis, Word-Step & Split Action Bar */}
+          <div className="p-1.5 sm:p-2.5 bg-[#0E1015] border border-white/10 rounded-md flex flex-wrap items-center justify-between gap-1.5 shrink-0">
+            <div className="flex items-center gap-1 sm:gap-1.5 min-w-0 flex-wrap">
+              {/* Word-by-word cursor control buttons (crucial on phone & great on PC) */}
+              <div className="flex items-center bg-[#171A21] border border-white/10 rounded overflow-hidden shrink-0">
+                <button
+                  type="button"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => handleStepWord(-1)}
+                  title="Lùi con trỏ sang từ trước"
+                  className="px-1.5 sm:px-2 py-1.5 text-[11px] font-medium text-[#D5D9E2] hover:bg-[#222733] hover:text-white flex items-center gap-0.5 cursor-pointer border-r border-white/8"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5 text-[#38BDF8]" />
+                  <span className="hidden xs:inline">Từ</span>
+                </button>
+                <button
+                  type="button"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => handleStepWord(1)}
+                  title="Tiến con trỏ sang từ tiếp theo"
+                  className="px-1.5 sm:px-2 py-1.5 text-[11px] font-medium text-[#D5D9E2] hover:bg-[#222733] hover:text-white flex items-center gap-0.5 cursor-pointer"
+                >
+                  <span className="hidden xs:inline">Từ</span>
+                  <ChevronRight className="w-3.5 h-3.5 text-[#38BDF8]" />
+                </button>
+              </div>
+
               <button
                 type="button"
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => applyToggleBracket()}
-                className={`px-2.5 sm:px-3 py-1.5 rounded text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap shrink-0 ${
+                className={`px-2 sm:px-2.5 py-1.5 rounded text-xs font-semibold flex items-center gap-1 cursor-pointer transition-colors whitespace-nowrap shrink-0 ${
                   activeWordToken?.emphasized
                     ? 'bg-[#262B38] hover:bg-[#313849] text-[#FF8C66] border border-[#FF5A1F]/45'
                     : 'bg-[#FF5A1F] hover:bg-[#FF703B] text-white'
                 }`}
               >
                 <Highlighter className="w-3.5 h-3.5 shrink-0" />
-                <span className="max-w-[140px] sm:max-w-none truncate">{bracketButtonLabel}</span>
+                <span className="max-w-[125px] sm:max-w-[180px] truncate">{bracketButtonLabel}</span>
               </button>
 
               {mode === 'script' && (
                 <button
                   type="button"
                   onMouseDown={(e) => e.preventDefault()}
-                  onClick={handleInsertSplitNewline}
-                  title="Xuống dòng tách thành câu mới"
-                  className="px-2 sm:px-2.5 py-1.5 rounded text-xs font-medium bg-[#171A21] hover:bg-[#222733] border border-white/10 text-[#E2E5EC] flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0"
+                  onClick={() => handleInsertSplitNewline()}
+                  title="Xuống dòng tách thành câu mới tại con trỏ (tự căn theo ranh giới từ)"
+                  className="px-2 sm:px-2.5 py-1.5 rounded text-xs font-medium bg-[#171A21] hover:bg-[#222733] border border-[#34D399]/35 text-[#E2E5EC] flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0"
                 >
-                  <CornerDownLeft className="w-3.5 h-3.5 text-[#34D399]" />
-                  <span>Tách câu</span>
+                  <CornerDownLeft className="w-3.5 h-3.5 text-[#34D399] shrink-0" />
+                  <span className="max-w-[130px] sm:max-w-none truncate">{splitButtonLabel}</span>
                 </button>
               )}
-
-              <span className="hidden md:inline text-[11px] text-[#8E95A5]">
-                <kbd className="px-1.5 py-0.5 bg-[#171A21] border border-white/10 rounded text-[10px] text-[#D5D9E2]">
-                  Ctrl+E
-                </kbd>
-              </span>
             </div>
 
-            <div className="flex items-center gap-2 shrink-0">
+            <div className="flex items-center gap-2 shrink-0 ml-auto">
               {mode === 'script' && (
                 <span className="sm:hidden text-[10.5px] font-mono-tabular text-[#34D399] whitespace-nowrap">
                   {calibratedCues.length} câu · {formatTimecodeShort(audioDurationSec)}
@@ -408,7 +548,7 @@ export const ImportSrtModal: React.FC<ImportSrtModalProps> = ({
             <div className="flex flex-col gap-2 flex-1 min-h-0">
               <div className="hidden sm:flex items-center justify-between text-[11px] text-[#9BA3B4] flex-wrap gap-2 shrink-0">
                 <span>
-                  Chỉ hiển thị nội dung chữ — mỗi lần bấm <strong>Enter</strong> xuống dòng sẽ tách thành 1 câu riêng.
+                  Mỗi dòng (<strong>Enter</strong>) là 1 câu. Dùng <strong className="text-[#38BDF8]">◀ Từ / Từ ▶</strong> hoặc chạm dãy từ bên dưới để chọn chỗ ngắt chính xác.
                 </span>
                 <span className="font-mono-tabular text-[#34D399]">
                   {calibratedCues.length} câu · Audio {formatTimecodeShort(audioDurationSec)}
@@ -421,12 +561,23 @@ export const ImportSrtModal: React.FC<ImportSrtModalProps> = ({
                 rows={7}
                 value={scriptText}
                 onChange={(e) => {
-                  setScriptText(e.target.value);
-                  syncSelectionFromEl(e.currentTarget);
+                  const el = e.currentTarget;
+                  lastValidSelectionRef.current = {
+                    start: el.selectionStart ?? 0,
+                    end: el.selectionEnd ?? 0,
+                  };
+                  setScriptText(el.value);
+                  syncSelectionFromEl(el);
                 }}
                 onSelect={(e) => syncSelectionFromEl(e.currentTarget)}
                 onClick={(e) => syncSelectionFromEl(e.currentTarget)}
                 onKeyUp={(e) => syncSelectionFromEl(e.currentTarget)}
+                onMouseUp={(e) => syncSelectionFromEl(e.currentTarget)}
+                onTouchEnd={(e) => {
+                  const el = e.currentTarget;
+                  syncSelectionFromEl(el);
+                  window.requestAnimationFrame(() => syncSelectionFromEl(el));
+                }}
                 onKeyDown={(e) => {
                   if (
                     (e.ctrlKey || e.metaKey) &&
@@ -434,48 +585,126 @@ export const ImportSrtModal: React.FC<ImportSrtModalProps> = ({
                   ) {
                     e.preventDefault();
                     applyToggleBracket(
-                      e.currentTarget.selectionStart ?? 0,
-                      e.currentTarget.selectionEnd ?? 0
+                      e.currentTarget.selectionStart ?? lastValidSelectionRef.current.start,
+                      e.currentTarget.selectionEnd ?? lastValidSelectionRef.current.end
                     );
                   }
                 }}
-                className="w-full flex-1 min-h-[140px] sm:min-h-[210px] bg-[#0D0F14] border border-white/12 focus:border-[#FF5A1F] rounded-md p-2.5 sm:p-3 text-base sm:text-sm text-[#F4F5F7] focus:outline-none leading-6 sm:leading-7 resize-none sm:resize-y"
-                placeholder={`Gõ hoặc dán lời thoại tại đây...\nMỗi dòng (Enter) là 1 câu phụ đề\nChạm vào từ bất kỳ rồi bấm "Bọc [từ]" để nhấn mạnh`}
+                className="w-full flex-1 min-h-[135px] sm:min-h-[205px] bg-[#0D0F14] border border-white/12 focus:border-[#FF5A1F] rounded-md p-2.5 sm:p-3 text-base sm:text-sm text-[#F4F5F7] focus:outline-none leading-6 sm:leading-7 resize-none sm:resize-y"
+                placeholder={`Gõ hoặc dán lời thoại tại đây...\nMỗi dòng (Enter) là 1 câu phụ đề\nChạm vào từ bất kỳ rồi bấm "Bọc [từ]" hoặc "Tách câu"`}
               />
 
-              {/* Interactive Word Chips for Line Under Cursor — single-row horizontal scroll on phone */}
+              {/* Interactive Word & Split Strip for Line Under Cursor */}
               {cursorLineInfo.tokens.length > 0 && (
-                <div className="p-2 bg-[#0E1015] border border-white/8 rounded-md space-y-1 shrink-0">
-                  <div className="flex items-center justify-between text-[10.5px] text-[#8E95A5]">
-                    <span>
-                      Dòng <strong className="text-[#D5D9E2]">#{cursorLineInfo.lineIndex + 1}</strong> · chạm từ để bọc <code className="text-[#FF5A1F]">[ ]</code>
-                    </span>
-                    {calibratedCues[cursorLineInfo.lineIndex] && (
-                      <span className="font-mono-tabular text-[#38BDF8]">
-                        {formatTimecodeShort(calibratedCues[cursorLineInfo.lineIndex].startSec)} →{' '}
-                        {formatTimecodeShort(calibratedCues[cursorLineInfo.lineIndex].endSec)}
+                <div className="p-2 bg-[#0E1015] border border-white/10 rounded-md space-y-1.5 shrink-0">
+                  <div className="flex items-center justify-between gap-2 text-[10.5px] text-[#8E95A5] flex-wrap">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="shrink-0">
+                        Dòng <strong className="text-[#D5D9E2]">#{cursorLineInfo.lineIndex + 1}</strong>
                       </span>
-                    )}
+                      {splitPreview?.canSplitSentence ? (
+                        <span className="text-[#34D399] truncate">
+                          · Điểm ngắt: «{splitPreview.beforeWord}» ✂ «{splitPreview.afterWord}»
+                        </span>
+                      ) : (
+                        <span className="text-[#8E95A5] truncate">
+                          {cursorLineInfo.tokens.length >= 2
+                            ? chipMode === 'split'
+                              ? '· Chạm nút ✂ để tách câu ngay'
+                              : '· Chạm từ để nhảy con trỏ / bọc [ ]'
+                            : '· Dòng chỉ có 1 từ'}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      {activeCalibratedCueIdx >= 0 && calibratedCues[activeCalibratedCueIdx] && (
+                        <span className="font-mono-tabular text-[#38BDF8]">
+                          {formatTimecodeShort(calibratedCues[activeCalibratedCueIdx].startSec)} →{' '}
+                          {formatTimecodeShort(calibratedCues[activeCalibratedCueIdx].endSec)}
+                        </span>
+                      )}
+
+                      {cursorLineInfo.tokens.length >= 2 && (
+                        <div className="flex items-center bg-[#171A21] border border-white/10 rounded overflow-hidden">
+                          <button
+                            type="button"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => setChipMode('bracket')}
+                            className={`px-2 py-0.5 text-[10px] font-medium cursor-pointer transition-colors ${
+                              chipMode === 'bracket'
+                                ? 'bg-[#FF5A1F] text-white'
+                                : 'text-[#9BA3B4] hover:text-white'
+                            }`}
+                          >
+                            Bọc [ ]
+                          </button>
+                          <button
+                            type="button"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => setChipMode('split')}
+                            className={`px-2 py-0.5 text-[10px] font-medium cursor-pointer transition-colors flex items-center gap-0.5 ${
+                              chipMode === 'split'
+                                ? 'bg-[#34D399] text-[#0B0C0F] font-semibold'
+                                : 'text-[#9BA3B4] hover:text-white'
+                            }`}
+                          >
+                            <Scissors className="w-2.5 h-2.5" />
+                            <span>Tách câu</span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   </div>
-                  <div className="flex flex-nowrap sm:flex-wrap overflow-x-auto sm:overflow-visible gap-1.5 pb-0.5">
+
+                  <div className="flex flex-nowrap sm:flex-wrap items-center overflow-x-auto sm:overflow-visible gap-1.5 pb-0.5">
                     {cursorLineInfo.tokens.map((tok, idx) => {
                       const isCursorHere = idx === cursorLineInfo.activeTokenIdx;
+                      const showSplitAfter =
+                        chipMode === 'split' && idx < cursorLineInfo.tokens.length - 1;
+                      const isActiveSplitBoundary =
+                        splitPreview?.canSplitSentence && splitPreview.splitPos === tok.absEnd;
+
                       return (
-                        <button
-                          key={`${tok.absStart}-${idx}`}
-                          type="button"
-                          onMouseDown={(e) => e.preventDefault()}
-                          onClick={() => applyToggleBracket(tok.absStart, tok.absEnd)}
-                          className={`px-2.5 py-1 sm:py-0.5 text-xs rounded border transition-colors cursor-pointer whitespace-nowrap shrink-0 min-h-[30px] sm:min-h-0 ${
-                            tok.emphasized
-                              ? 'bg-[#FF5A1F]/20 border-[#FF5A1F] text-[#FF9B76] font-semibold'
-                              : isCursorHere
-                              ? 'bg-[#1F2430] border-white/35 text-white'
-                              : 'bg-[#171A21] border-white/10 text-[#D5D9E2] hover:border-white/30'
-                          }`}
-                        >
-                          {tok.emphasized ? `[${tok.word}]` : tok.word}
-                        </button>
+                        <React.Fragment key={`${tok.absStart}-${idx}`}>
+                          <button
+                            type="button"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => {
+                              if (chipMode === 'bracket') {
+                                applyToggleBracket(tok.absStart, tok.absEnd);
+                              } else {
+                                // In split mode, tapping a word places caret cleanly right after it
+                                applyCursorMove(tok.absEnd);
+                              }
+                            }}
+                            className={`px-2.5 py-1 sm:py-0.5 text-xs rounded border transition-colors cursor-pointer whitespace-nowrap shrink-0 min-h-[30px] sm:min-h-0 ${
+                              tok.emphasized
+                                ? 'bg-[#FF5A1F]/20 border-[#FF5A1F] text-[#FF9B76] font-semibold'
+                                : isCursorHere
+                                ? 'bg-[#1F2430] border-[#38BDF8]/70 text-white'
+                                : 'bg-[#171A21] border-white/10 text-[#D5D9E2] hover:border-white/30'
+                            }`}
+                          >
+                            {tok.emphasized ? `[${tok.word}]` : tok.word}
+                          </button>
+
+                          {showSplitAfter && (
+                            <button
+                              type="button"
+                              onMouseDown={(e) => e.preventDefault()}
+                              onClick={() => handleInsertSplitNewline(tok.absEnd, tok.absEnd)}
+                              title={`Tách câu ngay sau "${tok.word}"`}
+                              className={`px-1.5 py-1 sm:py-0.5 rounded border text-[11px] flex items-center justify-center cursor-pointer shrink-0 min-h-[30px] sm:min-h-0 transition-colors ${
+                                isActiveSplitBoundary
+                                  ? 'bg-[#34D399] border-[#34D399] text-[#0B0C0F] font-bold shadow-sm'
+                                  : 'bg-[#16221E] border-[#34D399]/40 text-[#34D399] hover:bg-[#34D399] hover:text-[#0B0C0F]'
+                              }`}
+                            >
+                              <Scissors className="w-3 h-3" />
+                            </button>
+                          )}
+                        </React.Fragment>
                       );
                     })}
                   </div>
@@ -485,19 +714,30 @@ export const ImportSrtModal: React.FC<ImportSrtModalProps> = ({
           ) : (
             <div className="flex flex-col gap-1.5 flex-1 min-h-0">
               <div className="text-[11px] sm:text-xs text-[#9BA3B4] shrink-0">
-                Bọc từ trong ngoặc vuông <code className="text-[#FF5A1F]">[nhấn mạnh]</code> hoặc đặt con trỏ rồi bấm Bọc [từ].
+                Bọc từ trong ngoặc vuông <code className="text-[#FF5A1F]">[nhấn mạnh]</code> hoặc dùng <strong className="text-[#38BDF8]">◀ Từ / Từ ▶</strong> rồi bấm Bọc [từ].
               </div>
               <textarea
                 ref={srtTextareaRef}
                 rows={9}
                 value={srtText}
                 onChange={(e) => {
-                  setSrtText(e.target.value);
-                  syncSelectionFromEl(e.currentTarget);
+                  const el = e.currentTarget;
+                  lastValidSelectionRef.current = {
+                    start: el.selectionStart ?? 0,
+                    end: el.selectionEnd ?? 0,
+                  };
+                  setSrtText(el.value);
+                  syncSelectionFromEl(el);
                 }}
                 onSelect={(e) => syncSelectionFromEl(e.currentTarget)}
                 onClick={(e) => syncSelectionFromEl(e.currentTarget)}
                 onKeyUp={(e) => syncSelectionFromEl(e.currentTarget)}
+                onMouseUp={(e) => syncSelectionFromEl(e.currentTarget)}
+                onTouchEnd={(e) => {
+                  const el = e.currentTarget;
+                  syncSelectionFromEl(el);
+                  window.requestAnimationFrame(() => syncSelectionFromEl(el));
+                }}
                 onKeyDown={(e) => {
                   if (
                     (e.ctrlKey || e.metaKey) &&
@@ -505,8 +745,8 @@ export const ImportSrtModal: React.FC<ImportSrtModalProps> = ({
                   ) {
                     e.preventDefault();
                     applyToggleBracket(
-                      e.currentTarget.selectionStart ?? 0,
-                      e.currentTarget.selectionEnd ?? 0
+                      e.currentTarget.selectionStart ?? lastValidSelectionRef.current.start,
+                      e.currentTarget.selectionEnd ?? lastValidSelectionRef.current.end
                     );
                   }
                 }}

@@ -54,6 +54,7 @@ import {
   parseSrt,
   parseWordTimestampsJson,
   splitCueAtTime,
+  splitCueAtWordBoundary,
 } from './utils/srtParser';
 import { StyleTemplate } from './utils/styleTemplates';
 
@@ -849,10 +850,14 @@ export default function App() {
     );
   };
 
-  const handleSplitCue = (cueId: string) => {
+  const handleSplitCue = (cueId: string, splitWordCount?: number) => {
     const idx = project.cues.findIndex((c) => c.id === cueId);
     if (idx < 0) return;
-    const res = splitCueAtTime(project.cues[idx], currentTimeSec);
+    const targetCue = project.cues[idx];
+    const res =
+      splitWordCount !== undefined && splitWordCount >= 1
+        ? splitCueAtWordBoundary(targetCue, splitWordCount)
+        : splitCueAtTime(targetCue, currentTimeSec);
     if (!res) return;
     const [first, second] = res;
     setProject((p) => {

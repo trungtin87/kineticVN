@@ -532,6 +532,379 @@ export function toggleBracketAtCursor(
   };
 }
 
+export interface CueCursorSplitInfo {
+  canSplit: boolean;
+  reason: 'ready' | 'too-short' | 'at-start' | 'at-end';
+  splitWordCount: number;
+  totalWords: number;
+  beforeWord: string;
+  afterWord: string;
+  snappedCursorPos: number;
+  words: { word: string; start: number; end: number }[];
+}
+
+export function getCueSplitPointFromCursor(
+  text: string,
+  cursorPos: number
+): CueCursorSplitInfo {
+  const words: { word: string; start: number; end: number }[] = [];
+  const re = /\S+/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    words.push({
+      word: m[0],
+      start: m.index,
+      end: m.index + m[0].length,
+    });
+  }
+
+  const totalWords = words.length;
+  const clamped = Math.max(0, Math.min(text.length, cursorPos));
+
+  if (totalWords < 2) {
+    return {
+      canSplit: false,
+      reason: 'too-short',
+      splitWordCount: 0,
+      totalWords,
+      beforeWord: words[0]?.word || '',
+      afterWord: '',
+      snappedCursorPos: clamped,
+      words,
+    };
+  }
+
+  if (clamped <= words[0].start) {
+    return {
+      canSplit: false,
+      reason: 'at-start',
+      splitWordCount: 0,
+      totalWords,
+      beforeWord: '',
+      afterWord: words[0].word,
+      snappedCursorPos: words[0].end,
+      words,
+    };
+  }
+
+  if (clamped >= words[totalWords - 1].end) {
+    return {
+      canSplit: false,
+      reason: 'at-end',
+      splitWordCount: 0,
+      totalWords,
+      beforeWord: words[totalWords - 1].word,
+      afterWord: '',
+      snappedCursorPos: words[totalWords - 2].end,
+      words,
+    };
+  }
+
+  // Check if cursor sits in a whitespace/newline gap between two words
+  for (let i = 0; i < totalWords - 1; i++) {
+    if (clamped >= words[i].end && clamped <= words[i + 1].start) {
+      return {
+        canSplit: true,
+        reason: 'ready',
+        splitWordCount: i + 1,
+        totalWords,
+        beforeWord: words[i].word,
+        afterWord: words[i + 1].word,
+        snappedCursorPos: words[i].end,
+        words,
+      };
+    }
+  }
+
+  // Cursor sits strictly inside a word: snap cleanly to the nearest word boundary without slicing any word
+  for (let i = 0; i < totalWords; i++) {
+    const w = words[i];
+    if (clamped > w.start && clamped < w.end) {
+      let splitWordCount: number;
+      if (i === 0) {
+        splitWordCount = 1;
+      } else if (i === totalWords - 1) {
+        splitWordCount = totalWords - 1;
+      } else {
+        const distToStart = clamped - w.start;
+        const distToEnd = w.end - clamped;
+        splitWordCount = distToStart < distToEnd ? i : i + 1;
+      }
+      return {
+        canSplit: true,
+        reason: 'ready',
+        splitWordCount,
+        totalWords,
+        beforeWord: words[splitWordCount - 1].word,
+        afterWord: words[splitWordCount].word,
+        snappedCursorPos: words[splitWordCount - 1].end,
+        words,
+      };
+    }
+  }
+
+  return {
+    canSplit: false,
+    reason: 'at-end',
+    splitWordCount: 0,
+    totalWords,
+    beforeWord: words[totalWords - 1].word,
+    afterWord: '',
+    snappedCursorPos: words[totalWords - 2].end,
+    words,
+  };
+}
+
+/**
+ * Steps the cursor cleanly between word split boundaries inside a cue textarea.
+ */
+export function stepCueWordBoundaryCursor(
+  text: string,
+  cursorPos: number,
+  direction: -1 | 1
+): number {
+  const info = getCueSplitPointFromCursor(text, cursorPos);
+  if (info.words.length < 2) {
+    return direction < 0 ? 0 : text.length;
+  }
+  const maxSplit = info.words.length - 1;
+
+  if (!info.canSplit) {
+    if (info.reason === 'at-start') {
+      return info.words[0].end;
+    }
+    if (info.reason === 'at-end') {
+      return info.words[maxSplit - 1].end;
+    }
+    return cursorPos;
+  }
+
+  const nextSplit = Math.max(1, Math.min(maxSplit, info.splitWordCount + direction));
+  return info.words[nextSplit - 1].end;
+}
+
+/**
+ * Steps the cursor cleanly word-by-word in script / SRT textareas
+ * (targeting the end of each word token so both [wrapping] and splitting align deterministically).
+ */
+export function stepScriptCursorByWord(
+  text: string,
+  cursorPos: number,
+  direction: -1 | 1
+): number {
+  const tokens: { start: number; end: number }[] = [];
+  const re = /\S+/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    tokens.push({ start: m.index, end: m.index + m[0].length });
+  }
+  if (tokens.length === 0) return 0;
+
+  const clamped = Math.max(0, Math.min(text.length, cursorPos));
+
+  if (direction > 0) {
+    // Find first token whose end is strictly after cursorPos
+    const next = tokens.find((t) => t.end > clamped);
+    return next ? next.end : tokens[tokens.length - 1].end;
+  } else {
+    // Find last token whose end is strictly before cursorPos; if inside a token, jump to previous token's end (or start of first)
+    const insideIdx = tokens.findIndex((t) => clamped > t.start && clamped <= t.end);
+    if (insideIdx > 0) {
+      return tokens[insideIdx - 1].end;
+    }
+    if (insideIdx === 0) {
+      return tokens[0].start;
+    }
+    for (let i = tokens.length - 1; i >= 0; i--) {
+      if (tokens[i].end < clamped) {
+        return tokens[i].end;
+      }
+    }
+    return tokens[0].start;
+  }
+}
+
+export interface ScriptSplitPreview {
+  canSplitSentence: boolean;
+  atLineEdge: 'start' | 'end' | 'empty' | 'middle';
+  beforeWord: string;
+  afterWord: string;
+  splitPos: number;
+}
+
+export function previewScriptSplitAtCursor(
+  text: string,
+  selStart: number,
+  selEnd: number
+): ScriptSplitPreview {
+  const start = Math.max(0, Math.min(text.length, Math.min(selStart, selEnd)));
+  const info = getCursorLineInfo(text, start);
+  if (info.tokens.length === 0) {
+    return {
+      canSplitSentence: false,
+      atLineEdge: 'empty',
+      beforeWord: '',
+      afterWord: '',
+      splitPos: start,
+    };
+  }
+
+  const first = info.tokens[0];
+  const last = info.tokens[info.tokens.length - 1];
+
+  if (start <= first.absStart) {
+    return {
+      canSplitSentence: false,
+      atLineEdge: 'start',
+      beforeWord: '',
+      afterWord: first.word,
+      splitPos: start,
+    };
+  }
+
+  if (start >= last.absEnd) {
+    return {
+      canSplitSentence: false,
+      atLineEdge: 'end',
+      beforeWord: last.word,
+      afterWord: '',
+      splitPos: start,
+    };
+  }
+
+  // Between two tokens
+  for (let i = 0; i < info.tokens.length - 1; i++) {
+    const curr = info.tokens[i];
+    const next = info.tokens[i + 1];
+    if (start >= curr.absEnd && start <= next.absStart) {
+      return {
+        canSplitSentence: true,
+        atLineEdge: 'middle',
+        beforeWord: curr.word,
+        afterWord: next.word,
+        splitPos: curr.absEnd,
+      };
+    }
+  }
+
+  // Strictly inside a token on this line -> snap to nearest word boundary
+  for (let i = 0; i < info.tokens.length; i++) {
+    const tok = info.tokens[i];
+    if (start > tok.absStart && start < tok.absEnd) {
+      if (info.tokens.length === 1) {
+        return {
+          canSplitSentence: false,
+          atLineEdge: 'end',
+          beforeWord: tok.word,
+          afterWord: '',
+          splitPos: tok.absEnd,
+        };
+      }
+      let afterIdx: number;
+      if (i === 0) {
+        afterIdx = 0;
+      } else if (i === info.tokens.length - 1) {
+        afterIdx = info.tokens.length - 2;
+      } else {
+        const distStart = start - tok.absStart;
+        const distEnd = tok.absEnd - start;
+        afterIdx = distStart < distEnd ? i - 1 : i;
+      }
+      return {
+        canSplitSentence: true,
+        atLineEdge: 'middle',
+        beforeWord: info.tokens[afterIdx].word,
+        afterWord: info.tokens[afterIdx + 1].word,
+        splitPos: info.tokens[afterIdx].absEnd,
+      };
+    }
+  }
+
+  return {
+    canSplitSentence: false,
+    atLineEdge: 'end',
+    beforeWord: last.word,
+    afterWord: '',
+    splitPos: start,
+  };
+}
+
+/**
+ * Splits a script line into 2 sentences cleanly at the cursor's word boundary:
+ * - Never slices a word in half on imprecise mobile taps
+ * - Automatically closes/reopens [emphasis brackets] if splitting inside a bracketed phrase
+ * - Trims extra whitespace around the newline and places cursor at start of the new line
+ */
+export function splitScriptAtCursor(
+  text: string,
+  selStart: number,
+  selEnd: number
+): {
+  nextText: string;
+  nextCursor: number;
+  didSplitSentence: boolean;
+} {
+  const start = Math.max(0, Math.min(text.length, Math.min(selStart, selEnd)));
+  const end = Math.max(0, Math.min(text.length, Math.max(selStart, selEnd)));
+
+  if (end > start) {
+    const before = text.slice(0, start).replace(/[ \t]+$/, '');
+    const after = text.slice(end).replace(/^[ \t]+/, '');
+    const nextText = `${before}\n${after}`;
+    return {
+      nextText,
+      nextCursor: before.length + 1,
+      didSplitSentence: true,
+    };
+  }
+
+  const preview = previewScriptSplitAtCursor(text, start, end);
+  if (!preview.canSplitSentence) {
+    // At start or end of line: insert a clean newline for adding a new line
+    const before = text.slice(0, start).replace(/[ \t]+$/, '');
+    const after = text.slice(start).replace(/^[ \t]+/, '');
+    const nextText = `${before}\n${after}`;
+    return {
+      nextText,
+      nextCursor: before.length + 1,
+      didSplitSentence: false,
+    };
+  }
+
+  const splitPos = preview.splitPos;
+  const lineStart = text.slice(0, splitPos).lastIndexOf('\n') + 1;
+  const nextNl = text.indexOf('\n', splitPos);
+  const lineEnd = nextNl === -1 ? text.length : nextNl;
+  const lineText = text.slice(lineStart, lineEnd);
+
+  // Check if splitPos lands strictly inside a [bracketed multi-word phrase]
+  const bracketRe = /\[([^\[\]]+)\]/g;
+  let bm: RegExpExecArray | null;
+  let insideBracket = false;
+  while ((bm = bracketRe.exec(lineText)) !== null) {
+    const bStart = lineStart + bm.index;
+    const bEnd = bStart + bm[0].length;
+    if (splitPos > bStart && splitPos < bEnd) {
+      insideBracket = true;
+      break;
+    }
+  }
+
+  const rawBefore = text.slice(0, splitPos).replace(/[ \t]+$/, '');
+  const rawAfter = text.slice(splitPos).replace(/^[ \t]+/, '');
+
+  const closedBefore = insideBracket && !rawBefore.endsWith(']') ? `${rawBefore}]` : rawBefore;
+  const openedAfter = insideBracket && !rawAfter.startsWith('[') ? `[${rawAfter}` : rawAfter;
+
+  const nextText = `${closedBefore}\n${openedAfter}`;
+  return {
+    nextText,
+    nextCursor: closedBefore.length + 1,
+    didSplitSentence: true,
+  };
+}
+
+
 /**
  * Automatically splits plain-text script lines (1 Enter = 1 cue) and calibrates
  * cue timestamps to match the project's audio duration and energy envelope.
@@ -679,6 +1052,108 @@ export function distributeWordTimingsEvenly(cue: SubtitleCue): WordTiming[] {
   }));
 }
 
+function splitCueTextPreservingLineBreaks(
+  text: string,
+  splitWordCount: number
+): { firstText: string; secondText: string } {
+  const spans: { start: number; end: number }[] = [];
+  const re = /\S+/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    spans.push({ start: m.index, end: m.index + m[0].length });
+  }
+  if (spans.length < 2) {
+    return { firstText: text.trim(), secondText: '' };
+  }
+  const clamped = Math.max(1, Math.min(spans.length - 1, splitWordCount));
+  const firstEnd = spans[clamped - 1].end;
+  const secondStart = spans[clamped].start;
+  return {
+    firstText: text.slice(0, firstEnd).trim(),
+    secondText: text.slice(secondStart).trim(),
+  };
+}
+
+export function splitCueAtWordBoundary(
+  cue: SubtitleCue,
+  splitWordCount: number,
+  customSplitTimeSec?: number
+): [SubtitleCue, SubtitleCue] | null {
+  const dur = cue.endSec - cue.startSec;
+  if (dur < 0.24) return null;
+
+  const { flatWords } = tokenizeCueText(cue.text);
+  if (flatWords.length < 2) return null;
+
+  const clampedSplit = Math.max(1, Math.min(flatWords.length - 1, splitWordCount));
+  const { firstText, secondText } = splitCueTextPreservingLineBreaks(cue.text, clampedSplit);
+  if (!firstText || !secondText) return null;
+
+  const minBoundary = cue.startSec + 0.12;
+  const maxBoundary = cue.endSec - 0.12;
+
+  let splitTime: number;
+  if (
+    customSplitTimeSec !== undefined &&
+    customSplitTimeSec > minBoundary &&
+    customSplitTimeSec < maxBoundary
+  ) {
+    splitTime = Number(customSplitTimeSec.toFixed(2));
+  } else if (cue.wordTimings && cue.wordTimings.length === flatWords.length) {
+    const prevEnd = cue.wordTimings[clampedSplit - 1]?.endSec ?? cue.startSec;
+    const nextStart = cue.wordTimings[clampedSplit]?.startSec ?? prevEnd;
+    const rawMid = (prevEnd + nextStart) * 0.5;
+    splitTime = Number(Math.max(minBoundary, Math.min(maxBoundary, rawMid)).toFixed(2));
+  } else {
+    const firstWeight = firstText.replace(/\s+/g, '').length + clampedSplit * 1.6;
+    const secondWeight = secondText.replace(/\s+/g, '').length + (flatWords.length - clampedSplit) * 1.6;
+    const ratio = firstWeight / Math.max(1, firstWeight + secondWeight);
+    splitTime = Number(
+      Math.max(minBoundary, Math.min(maxBoundary, cue.startSec + dur * ratio)).toFixed(2)
+    );
+  }
+
+  const firstStyles: Record<number, WordStyleOverride> = {};
+  const secondStyles: Record<number, WordStyleOverride> = {};
+  for (const [kStr, style] of Object.entries(cue.wordStyles)) {
+    const k = Number(kStr);
+    if (k < clampedSplit) {
+      firstStyles[k] = style;
+    } else {
+      secondStyles[k - clampedSplit] = style;
+    }
+  }
+
+  const firstTimings =
+    cue.wordTimings && cue.wordTimings.length === flatWords.length
+      ? cue.wordTimings.slice(0, clampedSplit)
+      : null;
+  const secondTimings =
+    cue.wordTimings && cue.wordTimings.length === flatWords.length
+      ? cue.wordTimings.slice(clampedSplit)
+      : null;
+
+  const firstCue: SubtitleCue = {
+    ...cue,
+    endSec: splitTime,
+    text: firstText,
+    wordStyles: firstStyles,
+    wordTimings: firstTimings,
+  };
+  const secondCue: SubtitleCue = {
+    ...cue,
+    id: `cue-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    index: cue.index + 1,
+    startSec: splitTime,
+    endSec: cue.endSec,
+    text: secondText,
+    wordStyles: secondStyles,
+    wordTimings: secondTimings,
+  };
+
+  return [firstCue, secondCue];
+}
+
 export function splitCueAtTime(
   cue: SubtitleCue,
   playheadSec: number
@@ -720,54 +1195,7 @@ export function splitCueAtTime(
   }
   splitWordCount = Math.max(1, Math.min(flatWords.length - 1, splitWordCount));
 
-  const firstText = flatWords
-    .slice(0, splitWordCount)
-    .map((w) => w.word)
-    .join(' ');
-  const secondText = flatWords
-    .slice(splitWordCount)
-    .map((w) => w.word)
-    .join(' ');
-
-  const firstStyles: Record<number, WordStyleOverride> = {};
-  const secondStyles: Record<number, WordStyleOverride> = {};
-  for (const [kStr, style] of Object.entries(cue.wordStyles)) {
-    const k = Number(kStr);
-    if (k < splitWordCount) {
-      firstStyles[k] = style;
-    } else {
-      secondStyles[k - splitWordCount] = style;
-    }
-  }
-
-  const firstTimings =
-    cue.wordTimings && cue.wordTimings.length === flatWords.length
-      ? cue.wordTimings.slice(0, splitWordCount)
-      : null;
-  const secondTimings =
-    cue.wordTimings && cue.wordTimings.length === flatWords.length
-      ? cue.wordTimings.slice(splitWordCount)
-      : null;
-
-  const firstCue: SubtitleCue = {
-    ...cue,
-    endSec: splitTime,
-    text: firstText,
-    wordStyles: firstStyles,
-    wordTimings: firstTimings,
-  };
-  const secondCue: SubtitleCue = {
-    ...cue,
-    id: `cue-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-    index: cue.index + 1,
-    startSec: splitTime,
-    endSec: cue.endSec,
-    text: secondText,
-    wordStyles: secondStyles,
-    wordTimings: secondTimings,
-  };
-
-  return [firstCue, secondCue];
+  return splitCueAtWordBoundary(cue, splitWordCount, splitTime);
 }
 
 export function mergeCues(first: SubtitleCue, second: SubtitleCue): SubtitleCue {
