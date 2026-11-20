@@ -7,6 +7,7 @@ import {
   StudioProject,
   SubtitleCue,
   TextTransformMode,
+  TransitionPresetId,
   TypographyConfig,
 } from '../types/studio';
 import { tokenizeCueText } from '../utils/srtParser';
@@ -35,6 +36,15 @@ export interface RenderedCueBounds {
   width: number;
   height: number;
 }
+
+export const TIKTOK_SAFE_ZONE = {
+  left: 0.05,
+  right: 0.84, // leaves 16% on right for Like/Comment/Share buttons
+  top: 0.12,   // leaves 12% on top for Following/For You header
+  bottom: 0.76, // leaves 24% on bottom for caption & audio marquee
+  centerX: 0.445, // (0.05 + 0.84) / 2
+  centerY: 0.44,  // (0.12 + 0.76) / 2
+} as const;
 
 const watermarkImageCache = new Map<string, HTMLImageElement>();
 let grainTileCanvas: HTMLCanvasElement | null = null;
@@ -624,6 +634,146 @@ export function renderDynamicBackground(
       ctx.stroke();
       ctx.restore();
     }
+  } else if (bg.presetId === 'rainyNight') {
+    const bgGrad = ctx.createLinearGradient(0, 0, 0, height);
+    bgGrad.addColorStop(0, bg.primaryColor);
+    bgGrad.addColorStop(1, bg.secondaryColor);
+    ctx.fillStyle = bgGrad;
+    ctx.fillRect(0, 0, width, height);
+
+    const minDim = Math.min(width, height);
+    // Soft distant night bokeh lights
+    for (let b = 0; b < 18; b++) {
+      const bx = hashFloat(b * 4.1) * width;
+      const by = (0.25 + hashFloat(b * 8.7) * 0.65) * height;
+      const br = (0.028 + hashFloat(b * 12.3) * 0.055) * minDim * (1 + energyBoost * 0.25);
+      const col = b % 3 === 0 ? bg.accentColor : '#94A3B8';
+      const alpha = (0.06 + 0.1 * hashFloat(b * 3.3)) * bg.intensity;
+      const g = ctx.createRadialGradient(bx, by, 0, bx, by, br);
+      g.addColorStop(0, rgbaStr(col, alpha));
+      g.addColorStop(1, rgbaStr(col, 0));
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(bx, by, br, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Slanted falling rain streaks
+    const drops = 95;
+    const slant = width * 0.055;
+    for (let i = 0; i < drops; i++) {
+      const layerSpeed = 0.75 + hashFloat(i * 6.1) * 1.15;
+      const prog = (hashFloat(i * 9.9) + t * 0.95 * layerSpeed) % 1.2 - 0.1;
+      const xTop = ((hashFloat(i * 2.7) + prog * 0.06) % 1.1) * width - width * 0.05;
+      const yTop = prog * height;
+      const len = height * (0.045 + hashFloat(i * 15.1) * 0.075);
+      const alpha = (0.12 + 0.26 * hashFloat(i * 7.7)) * bg.intensity * (1 + energyBoost * 0.35);
+
+      ctx.strokeStyle = rgbaStr(i % 5 === 0 ? bg.accentColor : '#E2E8F0', alpha);
+      ctx.lineWidth = Math.max(1, minDim * 0.0014);
+      ctx.beginPath();
+      ctx.moveTo(xTop, yTop);
+      ctx.lineTo(xTop - slant * 0.18, yTop + len);
+      ctx.stroke();
+    }
+  } else if (bg.presetId === 'warmEmbers') {
+    const glowGrad = ctx.createRadialGradient(
+      width * 0.5,
+      height * 0.95,
+      0,
+      width * 0.5,
+      height * 0.65,
+      Math.hypot(width, height) * 0.75
+    );
+    glowGrad.addColorStop(0, bg.secondaryColor);
+    glowGrad.addColorStop(0.65, bg.primaryColor);
+    glowGrad.addColorStop(1, '#050303');
+    ctx.fillStyle = glowGrad;
+    ctx.fillRect(0, 0, width, height);
+
+    const minDim = Math.min(width, height);
+    const emberCount = 64;
+    for (let i = 0; i < emberCount; i++) {
+      const seedX = hashFloat(i * 3.9);
+      const speedY = 0.05 + hashFloat(i * 11.3) * 0.11;
+      const yNorm = ((hashFloat(i * 5.7) - t * speedY + 100) % 1.15) - 0.07;
+      const sway = Math.sin(t * (1.2 + hashFloat(i * 8.1)) + i * 1.9) * width * 0.035;
+      const x = seedX * width + sway;
+      const y = yNorm * height;
+      const pulse = 0.45 + 0.55 * Math.sin(t * 2.8 + i * 2.3);
+      const radius = (0.004 + hashFloat(i * 17.7) * 0.014) * minDim * (1 + energyBoost * 0.45);
+      const alpha = clamp01((0.25 + 0.55 * bg.intensity) * pulse);
+      const col = i % 3 === 0 ? '#FDE68A' : bg.accentColor;
+
+      const g = ctx.createRadialGradient(x, y, 0, x, y, radius * 2.2);
+      g.addColorStop(0, rgbaStr('#FFFFFF', alpha * 0.85));
+      g.addColorStop(0.35, rgbaStr(col, alpha));
+      g.addColorStop(1, rgbaStr(col, 0));
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(x, y, radius * 2.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  } else if (bg.presetId === 'noirSpotlight') {
+    ctx.fillStyle = bg.primaryColor;
+    ctx.fillRect(0, 0, width, height);
+
+    // Sweeping dramatic spotlight cone
+    const sweepX = width * (0.5 + 0.28 * Math.sin(t * 0.42));
+    const originX = width * (0.5 - 0.14 * Math.sin(t * 0.42));
+    const originY = -height * 0.12;
+    const coneHalfW = width * (0.28 + energyBoost * 0.08);
+
+    const beamGrad = ctx.createLinearGradient(originX, originY, sweepX, height);
+    beamGrad.addColorStop(0, rgbaStr('#FFFFFF', 0.24 * bg.intensity));
+    beamGrad.addColorStop(0.45, rgbaStr(bg.secondaryColor, 0.45 * bg.intensity));
+    beamGrad.addColorStop(0.85, rgbaStr(bg.accentColor, 0.14 * bg.intensity + energyBoost * 0.14));
+    beamGrad.addColorStop(1, rgbaStr(bg.primaryColor, 0));
+
+    ctx.save();
+    ctx.fillStyle = beamGrad;
+    ctx.beginPath();
+    ctx.moveTo(originX - width * 0.05, originY);
+    ctx.lineTo(originX + width * 0.05, originY);
+    ctx.lineTo(sweepX + coneHalfW, height);
+    ctx.lineTo(sweepX - coneHalfW, height);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+
+    // Floating noir dust motes inside the beam
+    const minDim = Math.min(width, height);
+    for (let i = 0; i < 42; i++) {
+      const mx = ((hashFloat(i * 5.1) + Math.sin(t * 0.25 + i) * 0.04) % 1) * width;
+      const my = ((hashFloat(i * 9.3) + t * 0.025 * (0.5 + hashFloat(i * 2.1))) % 1) * height;
+      const r = (0.0018 + hashFloat(i * 13.7) * 0.0032) * minDim;
+      const twinkle = 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(t * 1.9 + i));
+      ctx.fillStyle = rgbaStr(i % 6 === 0 ? bg.accentColor : '#E2E8F0', twinkle * 0.28 * bg.intensity);
+      ctx.beginPath();
+      ctx.arc(mx, my, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  } else if (bg.presetId === 'goldenMist') {
+    const bgGrad = ctx.createLinearGradient(0, 0, width, height);
+    bgGrad.addColorStop(0, bg.primaryColor);
+    bgGrad.addColorStop(0.55, bg.secondaryColor);
+    bgGrad.addColorStop(1, bg.primaryColor);
+    ctx.fillStyle = bgGrad;
+    ctx.fillRect(0, 0, width, height);
+
+    // Warm dawn/ancient mist ribbons drifting horizontally
+    for (let m = 0; m < 5; m++) {
+      const cx = width * ((0.2 + m * 0.18 + Math.sin(t * 0.22 + m * 1.3) * 0.18));
+      const cy = height * (0.28 + m * 0.13 + Math.cos(t * 0.18 + m) * 0.06);
+      const rx = Math.max(width, height) * (0.45 + 0.08 * m);
+      const col = m % 2 === 0 ? bg.accentColor : '#FDE68A';
+      const alpha = (0.07 + 0.05 * Math.sin(t * 0.5 + m)) * bg.intensity + energyBoost * 0.08;
+      const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, rx);
+      grad.addColorStop(0, rgbaStr(col, alpha));
+      grad.addColorStop(1, rgbaStr(col, 0));
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, width, height);
+    }
   } else {
     // audioBars (Spectrum Bars)
     const bgGrad = ctx.createLinearGradient(0, 0, 0, height);
@@ -755,7 +905,12 @@ function measureAndLayoutCue(
           ? override?.style || typo.emphasisStyle
           : 'color';
         const baseStyleScale =
-          emphasized && (wordStyle === 'scaleColor' || wordStyle === 'glow')
+          emphasized &&
+          (wordStyle === 'scaleColor' ||
+            wordStyle === 'glow' ||
+            wordStyle === 'pulseHalo' ||
+            wordStyle === 'comicPop' ||
+            wordStyle === 'fireAura')
             ? typo.emphasisScale
             : 1;
         const scaleMult =
@@ -776,10 +931,24 @@ function measureAndLayoutCue(
             : token.word;
         const displayText = applyTextTransform(rawWordText, typo.textTransform);
         const metrics = ctx.measureText(displayText);
-        const boxPad =
-          emphasized && (wordStyle === 'highlightBox' || wordStyle === 'outlineBadge')
-            ? wordFontPx * 0.26
-            : 0;
+        let boxPad = 0;
+        if (emphasized) {
+          if (wordStyle === 'highlightBox' || wordStyle === 'outlineBadge') {
+            boxPad = wordFontPx * 0.26;
+          } else if (
+            wordStyle === 'pillSolid' ||
+            wordStyle === 'skewBadge' ||
+            wordStyle === 'tapeSticker' ||
+            wordStyle === 'circleLoop' ||
+            wordStyle === 'cornerFrame' ||
+            wordStyle === 'markerHighlight' ||
+            wordStyle === 'topBarAccent'
+          ) {
+            boxPad = wordFontPx * 0.3;
+          } else if (wordStyle === 'bracketTag') {
+            boxPad = wordFontPx * 0.44;
+          }
+        }
         const wordWidth = metrics.width + boxPad;
 
         const addedWidth = currentWords.length > 0 ? spaceWidth + wordWidth : wordWidth;
@@ -931,6 +1100,8 @@ export function renderKineticScene(
     const typo = project.typography;
     const motion = project.motion;
     const preset: AnimationPresetId = activeCue.customAnimation || motion.preset;
+    const transitionPreset: TransitionPresetId =
+      activeCue.customTransition || motion.transition || 'fade';
     const align = activeCue.customAlign || typo.textAlign;
     const posXNorm = activeCue.customPos?.x ?? typo.posX;
     const posYNorm = activeCue.customPos?.y ?? typo.posY;
@@ -941,9 +1112,13 @@ export function renderKineticScene(
     const elapsed = timeSec - activeCue.startSec;
     const remaining = activeCue.endSec - timeSec;
 
-    // Exit fade
-    const outOpacity =
-      motion.outFadeSec > 0.01 ? clamp01(remaining / motion.outFadeSec) : 1;
+    // Exit transition window
+    const outDur =
+      transitionPreset === 'none'
+        ? 0
+        : Math.min(cueDur * 0.65, Math.max(0.06, motion.outFadeSec));
+    const outProgress = outDur > 0.005 ? clamp01(1 - remaining / outDur) : 0;
+    const outOpacity = transitionPreset === 'none' ? 1 : clamp01(1 - outProgress);
 
     // Global audio-reactive subtle bounce + optional camera float drift
     const audioBounceScale = motion.audioReactiveBounce ? 1 + audioEnergy * 0.045 : 1;
@@ -1003,6 +1178,9 @@ export function renderKineticScene(
         layout.baseFontPx * 0.28
       );
       ctx.fill();
+      ctx.strokeStyle = rgbaStr('#FFFFFF', cardAlpha * 0.18);
+      ctx.lineWidth = Math.max(1, scaleFactor * 1.2);
+      ctx.stroke();
       ctx.restore();
     }
 
@@ -1050,7 +1228,7 @@ export function renderKineticScene(
         const rawProgress = clamp01((elapsed - wordDelay) / wordAnimDur);
 
         // Compute preset-specific transform & styling
-        let alpha = outOpacity;
+        let alpha = 1;
         let offsetX = 0;
         let offsetY = 0;
         let scaleX = 1;
@@ -1058,6 +1236,7 @@ export function renderKineticScene(
         let rotRad = 0;
         let skewX = 0;
         let wipeProgress = -1;
+        let outWipeDir: 'none' | 'left' | 'right' = 'none';
         let blurPx = 0;
         let clipLine = false;
         let drawTextStr = word.displayText;
@@ -1277,6 +1456,143 @@ export function renderKineticScene(
           const driftX = Math.cos(timeSec * 0.9 + word.wordIndex * 0.5) * 4 * scaleFactor;
           offsetY = (1 - e) * 24 * scaleFactor + driftY;
           offsetX = driftX;
+        } else if (preset === 'inkReveal') {
+          const e = easeOutCubic(rawProgress);
+          alpha *= e;
+          blurPx = (1 - e) * 14 * scaleFactor;
+          const s = 0.86 + 0.14 * e;
+          scaleX = s;
+          scaleY = s;
+          offsetY = (1 - e) * 14 * scaleFactor;
+        } else if (preset === 'cinemaFade') {
+          const e = easeOutCubic(rawProgress);
+          const blockE = easeOutCubic(clamp01(elapsed / Math.max(0.35, 0.75 / motion.inSpeed)));
+          alpha *= e;
+          const centerRel = wordCenterX - centerX;
+          offsetX = centerRel * (1 - blockE) * -0.06;
+          blurPx = (1 - e) * 4 * scaleFactor;
+        } else if (preset === 'whisperRise') {
+          const e = easeOutCubic(rawProgress);
+          alpha *= e * (0.94 + 0.06 * Math.sin(timeSec * 1.6 + word.wordIndex * 0.5));
+          offsetY = (1 - e) * 30 * scaleFactor + Math.sin(timeSec * 1.1 + word.wordIndex) * 3 * scaleFactor;
+        } else if (preset === 'bookTurn') {
+          const e = easeOutCubic(rawProgress);
+          alpha *= clamp01(rawProgress * 2.2);
+          scaleX = Math.max(0.05, 0.15 + 0.85 * e);
+          skewX = (1 - e) * 0.28;
+          offsetX = (1 - e) * -28 * scaleFactor;
+        } else if (preset === 'spotlightWord') {
+          const wordActiveAt = explicitWordTiming
+            ? Math.max(0, explicitWordTiming.startSec - activeCue.startSec)
+            : (word.wordIndex / Math.max(1, totalWords)) * (cueDur * 0.78);
+          const isLit = elapsed >= wordActiveAt;
+          if (isLit) {
+            const litAge = Math.max(0, elapsed - wordActiveAt);
+            const settle = easeOutCubic(clamp01(litAge / 0.25));
+            const pulse = 1 + Math.exp(-litAge * 5) * 0.11;
+            scaleX = pulse;
+            scaleY = pulse;
+            alpha *= 0.65 + 0.35 * settle;
+            extraGlow = litAge < 0.45;
+          } else {
+            alpha *= 0.34;
+          }
+        }
+
+        // Apply Exit / Cue Transition Effect
+        if (outProgress > 0 && transitionPreset !== 'none') {
+          if (transitionPreset === 'fade') {
+            alpha *= 1 - outProgress;
+          } else if (transitionPreset === 'slideUpOut') {
+            const oe = outProgress * outProgress;
+            offsetY -= oe * line.lineHeightPx * 1.1;
+            alpha *= clamp01(1 - outProgress * 1.1);
+          } else if (transitionPreset === 'slideDownOut') {
+            const oe = outProgress * outProgress;
+            offsetY += oe * line.lineHeightPx * 1.1;
+            alpha *= clamp01(1 - outProgress * 1.1);
+          } else if (transitionPreset === 'slideLeftOut') {
+            const oe = outProgress * outProgress;
+            offsetX -= oe * 280 * scaleFactor;
+            skewX += oe * 0.35;
+            alpha *= clamp01(1 - outProgress * 1.15);
+          } else if (transitionPreset === 'slideRightOut') {
+            const oe = outProgress * outProgress;
+            offsetX += oe * 280 * scaleFactor;
+            skewX -= oe * 0.35;
+            alpha *= clamp01(1 - outProgress * 1.15);
+          } else if (transitionPreset === 'zoomOutShrink') {
+            const oe = outProgress * outProgress;
+            const os = Math.max(0.02, 1 - oe * 0.85);
+            scaleX *= os;
+            scaleY *= os;
+            alpha *= clamp01(1 - outProgress * 1.1);
+          } else if (transitionPreset === 'zoomInBurst') {
+            const oe = outProgress * outProgress;
+            const os = 1 + oe * 1.55;
+            scaleX *= os;
+            scaleY *= os;
+            blurPx += oe * 14 * scaleFactor;
+            alpha *= clamp01(1 - outProgress * 1.2);
+          } else if (transitionPreset === 'blurDissolve') {
+            blurPx += outProgress * 20 * scaleFactor;
+            alpha *= 1 - outProgress;
+          } else if (transitionPreset === 'glitchCut') {
+            const jitter =
+              (hashFloat(Math.floor(timeSec * 36) + word.wordIndex * 7.1) - 0.5) * 2;
+            offsetX += jitter * outProgress * 32 * scaleFactor;
+            rgbSplitPx += outProgress * 22 * scaleFactor;
+            alpha *=
+              outProgress > 0.78
+                ? (1 - outProgress) * 4.5
+                : hashFloat(Math.floor(timeSec * 40) + word.wordIndex) > 0.25
+                ? 1
+                : 0.22;
+          } else if (transitionPreset === 'wipeLeft') {
+            outWipeDir = 'left';
+          } else if (transitionPreset === 'wipeRight') {
+            outWipeDir = 'right';
+          } else if (transitionPreset === 'splitCurtainOut') {
+            const oe = outProgress * outProgress;
+            const dir = wordCenterX >= centerX ? 1 : -1;
+            offsetX += dir * oe * 150 * scaleFactor;
+            alpha *= clamp01(1 - outProgress * 1.1);
+          } else if (transitionPreset === 'flipOut') {
+            const oe = outProgress * outProgress;
+            scaleY *= Math.max(0.02, 1 - oe);
+            alpha *= clamp01(1 - outProgress * 1.15);
+          } else if (transitionPreset === 'scatterBlow') {
+            const wordOutP = clamp01(
+              outProgress * 1.25 - (word.wordIndex / Math.max(1, totalWords)) * 0.22
+            );
+            const oe = wordOutP * wordOutP;
+            const dirX = (hashFloat(word.wordIndex * 5.3) - 0.5) * 260 * scaleFactor;
+            const dirY = (hashFloat(word.wordIndex * 9.7) - 0.5) * 180 * scaleFactor;
+            offsetX += oe * dirX;
+            offsetY += oe * dirY;
+            rotRad += oe * (hashFloat(word.wordIndex * 2.1) - 0.5) * 0.65;
+            alpha *= 1 - wordOutP;
+          } else if (transitionPreset === 'dropGravity') {
+            const wordOutP = clamp01(
+              outProgress * 1.25 - (word.wordIndex / Math.max(1, totalWords)) * 0.22
+            );
+            const oe = wordOutP * wordOutP;
+            offsetY += oe * 165 * scaleFactor;
+            rotRad += oe * (word.wordIndex % 2 === 0 ? 0.25 : -0.25);
+            alpha *= clamp01(1 - wordOutP * 1.08);
+          } else if (transitionPreset === 'spinShrink') {
+            const os = Math.max(0.02, 1 - outProgress);
+            scaleX *= os;
+            scaleY *= os;
+            rotRad += outProgress * 0.95;
+            alpha *= 1 - outProgress;
+          } else if (transitionPreset === 'flashCut') {
+            const flashBump = 1 + Math.sin(outProgress * Math.PI) * 0.14;
+            scaleX *= flashBump;
+            scaleY *= flashBump;
+            extraGlow = extraGlow || outProgress > 0.08;
+            alpha *= outProgress < 0.7 ? 1 : clamp01((1 - outProgress) * 3.3);
+          }
         }
 
         if (alpha > 0.01 && drawTextStr.length > 0) {
@@ -1311,8 +1627,31 @@ export function renderKineticScene(
             ctx.clip();
           }
 
+          if (outWipeDir !== 'none' && outProgress > 0.005) {
+            const keepFrac = Math.max(0, 1 - easeOutCubic(outProgress));
+            const totalW = word.width * 1.3;
+            const keepW = totalW * keepFrac;
+            const clipX =
+              outWipeDir === 'left'
+                ? -word.width * 0.65
+                : -word.width * 0.65 + (totalW - keepW);
+            ctx.beginPath();
+            ctx.rect(clipX, -word.height * 0.85, keepW, word.height * 1.7);
+            ctx.clip();
+          }
+
           const fontPx = word.height;
           ctx.font = `${word.fontWeight} ${fontPx}px "${word.fontFamily}", sans-serif`;
+
+          const emphProgress = clamp01(
+            (elapsed - wordDelay) / Math.max(0.2, wordAnimDur * 1.15)
+          );
+          const easeEmph = easeOutCubic(emphProgress);
+
+          if (word.emphasized && word.style === 'pulseHalo') {
+            const breathe = 1 + 0.055 * Math.sin(timeSec * 5.2 + word.wordIndex);
+            ctx.scale(breathe, breathe);
+          }
 
           // Karaoke sweep fills active words in emphasisColor if not already custom colored
           const effectiveColor =
@@ -1321,7 +1660,7 @@ export function renderKineticScene(
               : word.color;
           const effectiveAccent = word.emphasized ? word.bgColor : effectiveColor;
 
-          // Highlight Box or Outline Badge behind emphasized word
+          // Backdrops, Badges, Frames & Marker Highlights behind emphasized word
           if (word.emphasized && word.style === 'highlightBox') {
             const boxW = word.width;
             const boxH = fontPx * 1.18;
@@ -1331,6 +1670,41 @@ export function renderKineticScene(
             ctx.shadowBlur = 10 * scaleFactor;
             drawRoundedRect(ctx, -boxW / 2, -boxH / 2, boxW, boxH, fontPx * 0.16);
             ctx.fill();
+            ctx.restore();
+          } else if (word.emphasized && word.style === 'pillSolid') {
+            const boxW = word.width;
+            const boxH = fontPx * 1.18;
+            ctx.save();
+            ctx.fillStyle = effectiveAccent;
+            ctx.shadowColor = 'rgba(0,0,0,0.28)';
+            ctx.shadowBlur = 12 * scaleFactor;
+            drawRoundedRect(ctx, -boxW / 2, -boxH / 2, boxW, boxH, boxH / 2);
+            ctx.fill();
+            ctx.restore();
+          } else if (word.emphasized && word.style === 'skewBadge') {
+            const boxW = word.width;
+            const boxH = fontPx * 1.16;
+            ctx.save();
+            ctx.transform(1, 0, -0.22, 1, 0, 0);
+            ctx.fillStyle = effectiveAccent;
+            ctx.shadowColor = 'rgba(0,0,0,0.28)';
+            ctx.shadowBlur = 10 * scaleFactor;
+            drawRoundedRect(ctx, -boxW / 2, -boxH / 2, boxW, boxH, fontPx * 0.1);
+            ctx.fill();
+            ctx.restore();
+          } else if (word.emphasized && word.style === 'tapeSticker') {
+            const boxW = word.width * 1.03;
+            const boxH = fontPx * 1.18;
+            ctx.save();
+            ctx.rotate(-0.042);
+            ctx.fillStyle = effectiveAccent;
+            ctx.shadowColor = 'rgba(0,0,0,0.32)';
+            ctx.shadowBlur = 10 * scaleFactor;
+            ctx.shadowOffsetY = 4 * scaleFactor;
+            ctx.fillRect(-boxW / 2, -boxH / 2, boxW, boxH);
+            ctx.strokeStyle = 'rgba(255,255,255,0.28)';
+            ctx.lineWidth = Math.max(1, fontPx * 0.025);
+            ctx.strokeRect(-boxW / 2, -boxH / 2, boxW, boxH);
             ctx.restore();
           } else if (word.emphasized && word.style === 'outlineBadge') {
             const boxW = word.width;
@@ -1343,16 +1717,127 @@ export function renderKineticScene(
             ctx.fill();
             ctx.stroke();
             ctx.restore();
+          } else if (word.emphasized && word.style === 'markerHighlight') {
+            const sweepW = word.width * easeEmph;
+            const markH = fontPx * 0.56;
+            const markY = -fontPx * 0.02;
+            ctx.save();
+            ctx.transform(1, 0, -0.14, 1, 0, 0);
+            ctx.fillStyle = rgbaStr(effectiveAccent, 0.58);
+            drawRoundedRect(ctx, -word.width / 2, markY, sweepW, markH, fontPx * 0.08);
+            ctx.fill();
+            ctx.fillStyle = rgbaStr(effectiveAccent, 0.35);
+            drawRoundedRect(
+              ctx,
+              -word.width / 2 + fontPx * 0.04,
+              markY + markH * 0.15,
+              Math.max(0, sweepW - fontPx * 0.08),
+              markH * 0.55,
+              fontPx * 0.05
+            );
+            ctx.fill();
+            ctx.restore();
+          } else if (word.emphasized && word.style === 'topBarAccent') {
+            const boxW = word.width;
+            const boxH = fontPx * 1.18;
+            const topY = -boxH / 2;
+            ctx.save();
+            const wash = ctx.createLinearGradient(0, topY, 0, topY + boxH);
+            wash.addColorStop(0, rgbaStr(effectiveAccent, 0.28));
+            wash.addColorStop(1, rgbaStr(effectiveAccent, 0.0));
+            ctx.fillStyle = wash;
+            ctx.fillRect(-boxW / 2, topY, boxW, boxH);
+            const barH = Math.max(3, fontPx * 0.09);
+            ctx.fillStyle = effectiveAccent;
+            drawRoundedRect(ctx, -boxW / 2, topY, boxW * easeEmph, barH, barH / 2);
+            ctx.fill();
+            ctx.restore();
+          } else if (word.emphasized && word.style === 'pulseHalo') {
+            const ringPulse = 0.5 + 0.5 * Math.sin(timeSec * 5.2 + word.wordIndex);
+            const ringScale = 1 + ringPulse * 0.14;
+            const boxW = word.width * ringScale;
+            const boxH = fontPx * 1.24 * ringScale;
+            ctx.save();
+            ctx.strokeStyle = rgbaStr(effectiveAccent, 0.45 + 0.35 * (1 - ringPulse));
+            ctx.lineWidth = Math.max(2, fontPx * 0.045);
+            ctx.shadowColor = effectiveAccent;
+            ctx.shadowBlur = 16 * scaleFactor;
+            drawRoundedRect(ctx, -boxW / 2, -boxH / 2, boxW, boxH, boxH / 2);
+            ctx.stroke();
+            ctx.restore();
+          } else if (word.emphasized && word.style === 'cornerFrame') {
+            const expand = 1 + (1 - easeEmph) * 0.28;
+            const halfW = (word.width / 2) * expand;
+            const halfH = fontPx * 0.6 * expand;
+            const arm = Math.min(word.width * 0.22, fontPx * 0.34);
+            ctx.save();
+            ctx.strokeStyle = effectiveAccent;
+            ctx.lineWidth = Math.max(2.2, fontPx * 0.065);
+            ctx.lineCap = 'square';
+            ctx.beginPath();
+            // Top-left
+            ctx.moveTo(-halfW, -halfH + arm);
+            ctx.lineTo(-halfW, -halfH);
+            ctx.lineTo(-halfW + arm, -halfH);
+            // Top-right
+            ctx.moveTo(halfW - arm, -halfH);
+            ctx.lineTo(halfW, -halfH);
+            ctx.lineTo(halfW, -halfH + arm);
+            // Bottom-right
+            ctx.moveTo(halfW, halfH - arm);
+            ctx.lineTo(halfW, halfH);
+            ctx.lineTo(halfW - arm, halfH);
+            // Bottom-left
+            ctx.moveTo(-halfW + arm, halfH);
+            ctx.lineTo(-halfW, halfH);
+            ctx.lineTo(-halfW, halfH - arm);
+            ctx.stroke();
+            ctx.restore();
+          } else if (word.emphasized && word.style === 'bracketTag') {
+            const slide = (1 - easeEmph) * fontPx * 0.2;
+            const halfW = word.width / 2 - fontPx * 0.05 + slide;
+            const halfH = fontPx * 0.56;
+            const serif = fontPx * 0.16;
+            ctx.save();
+            ctx.strokeStyle = effectiveAccent;
+            ctx.lineWidth = Math.max(2.4, fontPx * 0.075);
+            ctx.lineCap = 'square';
+            ctx.beginPath();
+            // Left bracket [
+            ctx.moveTo(-halfW + serif, -halfH);
+            ctx.lineTo(-halfW, -halfH);
+            ctx.lineTo(-halfW, halfH);
+            ctx.lineTo(-halfW + serif, halfH);
+            // Right bracket ]
+            ctx.moveTo(halfW - serif, -halfH);
+            ctx.lineTo(halfW, -halfH);
+            ctx.lineTo(halfW, halfH);
+            ctx.lineTo(halfW - serif, halfH);
+            ctx.stroke();
+            ctx.restore();
           }
 
           // RGB Glitch / Chromatic Aberration Ghost Layers
-          if (rgbSplitPx > 0.5) {
+          const activeChromaticSplit = word.emphasized && word.style === 'chromaticSplit';
+          const effectiveSplit = activeChromaticSplit
+            ? Math.max(rgbSplitPx, Math.max(2.5, fontPx * 0.055))
+            : rgbSplitPx;
+          if (effectiveSplit > 0.5) {
             ctx.save();
-            ctx.globalAlpha = clamp01(alpha * 0.6);
+            ctx.globalAlpha = clamp01(alpha * (activeChromaticSplit ? 0.85 : 0.6));
             ctx.fillStyle = '#00F0FF';
-            ctx.fillText(drawTextStr, -rgbSplitPx, 0);
-            ctx.fillStyle = '#FF0055';
-            ctx.fillText(drawTextStr, rgbSplitPx, 0);
+            ctx.fillText(
+              drawTextStr,
+              -effectiveSplit,
+              activeChromaticSplit ? -effectiveSplit * 0.35 : 0
+            );
+            ctx.fillStyle =
+              activeChromaticSplit && word.bgColor !== word.color ? word.bgColor : '#FF0055';
+            ctx.fillText(
+              drawTextStr,
+              effectiveSplit,
+              activeChromaticSplit ? effectiveSplit * 0.35 : 0
+            );
             ctx.restore();
           }
 
@@ -1365,6 +1850,22 @@ export function renderKineticScene(
             ctx.fillStyle = 'rgba(0,0,0,0.65)';
             ctx.fillText(drawTextStr, off * 1.7, off * 1.7);
             ctx.restore();
+          } else if (word.emphasized && word.style === 'retroLongShadow') {
+            ctx.save();
+            const step = Math.max(1.2, fontPx * 0.018);
+            const steps = 8;
+            for (let s = steps; s >= 1; s--) {
+              ctx.fillStyle =
+                s > steps - 2 ? 'rgba(0,0,0,0.55)' : rgbaStr(effectiveAccent, 0.35 + (1 - s / steps) * 0.55);
+              ctx.fillText(drawTextStr, s * step, s * step);
+            }
+            ctx.restore();
+          } else if (word.emphasized && word.style === 'comicPop') {
+            ctx.save();
+            const off = Math.max(4, fontPx * 0.085);
+            ctx.fillStyle = '#090B10';
+            ctx.fillText(drawTextStr, off, off);
+            ctx.restore();
           }
 
           // Shadow / Glow / Blur
@@ -1372,7 +1873,24 @@ export function renderKineticScene(
             ctx.filter = `blur(${blurPx.toFixed(1)}px)`;
           }
 
-          if ((word.emphasized && word.style === 'glow') || extraGlow) {
+          if (word.emphasized && word.style === 'neonTube') {
+            const flicker = 0.86 + 0.14 * Math.sin(timeSec * 11 + word.wordIndex * 1.7);
+            ctx.shadowColor = effectiveAccent;
+            ctx.shadowBlur = 32 * scaleFactor * flicker;
+            ctx.shadowOffsetX = 0;
+            ctx.shadowOffsetY = 0;
+          } else if (word.emphasized && word.style === 'fireAura') {
+            const flame = 0.8 + 0.2 * Math.sin(timeSec * 9.5 + word.wordIndex * 1.3);
+            ctx.shadowColor = '#FF4500';
+            ctx.shadowBlur = 28 * scaleFactor * flame;
+            ctx.shadowOffsetX = 0;
+            ctx.shadowOffsetY = -3 * scaleFactor;
+          } else if (word.emphasized && word.style === 'pulseHalo') {
+            ctx.shadowColor = effectiveAccent;
+            ctx.shadowBlur = 22 * scaleFactor;
+            ctx.shadowOffsetX = 0;
+            ctx.shadowOffsetY = 0;
+          } else if ((word.emphasized && word.style === 'glow') || extraGlow) {
             ctx.shadowColor = effectiveAccent;
             ctx.shadowBlur = 28 * scaleFactor;
             ctx.shadowOffsetX = 0;
@@ -1385,34 +1903,155 @@ export function renderKineticScene(
           }
 
           // Stroke outline
-          if (typo.strokeWidth > 0 && !(word.emphasized && word.style === 'highlightBox')) {
+          const skipDefaultStroke =
+            word.emphasized &&
+            (word.style === 'highlightBox' ||
+              word.style === 'pillSolid' ||
+              word.style === 'skewBadge' ||
+              word.style === 'tapeSticker' ||
+              word.style === 'hollowStroke' ||
+              word.style === 'comicPop');
+          if (typo.strokeWidth > 0 && !skipDefaultStroke) {
             ctx.lineJoin = 'round';
             ctx.lineWidth = typo.strokeWidth * 2 * scaleFactor;
             ctx.strokeStyle = typo.strokeColor;
             ctx.strokeText(drawTextStr, 0, 0);
           }
 
-          // Fill text
-          if (word.emphasized && word.style === 'highlightBox') {
-            ctx.fillStyle =
-              word.color !== word.bgColor ? word.color : getContrastInk(effectiveAccent);
-          } else if (word.emphasized && word.style === 'doubleShadow') {
-            ctx.fillStyle = word.color !== word.bgColor ? word.color : '#FFFFFF';
-          } else if (word.emphasized && word.style === 'gradientFill') {
-            const grad = ctx.createLinearGradient(-word.width / 2, -fontPx / 2, word.width / 2, fontPx / 2);
-            grad.addColorStop(0, '#FFFFFF');
-            grad.addColorStop(0.45, effectiveColor);
-            grad.addColorStop(1, word.bgColor !== word.color ? word.bgColor : '#FACC15');
-            ctx.fillStyle = grad;
-          } else {
-            ctx.fillStyle = effectiveColor;
+          if (word.emphasized && word.style === 'comicPop') {
+            ctx.save();
+            ctx.lineJoin = 'round';
+            ctx.lineWidth = Math.max(3, fontPx * 0.12);
+            ctx.strokeStyle = '#090B10';
+            ctx.strokeText(drawTextStr, 0, 0);
+            ctx.restore();
+          } else if (word.emphasized && word.style === 'neonTube') {
+            ctx.save();
+            ctx.lineJoin = 'round';
+            ctx.lineWidth = Math.max(2.5, fontPx * 0.085);
+            ctx.strokeStyle = effectiveAccent;
+            ctx.strokeText(drawTextStr, 0, 0);
+            ctx.restore();
           }
-          ctx.fillText(drawTextStr, 0, 0);
 
-          // Underline Sweep
+          // Fill text
+          if (word.emphasized && word.style === 'hollowStroke') {
+            ctx.save();
+            ctx.lineJoin = 'round';
+            ctx.lineWidth = Math.max(2.4, fontPx * 0.075);
+            ctx.strokeStyle = effectiveColor;
+            ctx.shadowColor = effectiveColor;
+            ctx.shadowBlur = 12 * scaleFactor;
+            ctx.strokeText(drawTextStr, 0, 0);
+            ctx.fillStyle = rgbaStr(effectiveColor, 0.08);
+            ctx.fillText(drawTextStr, 0, 0);
+            ctx.restore();
+          } else {
+            const isSolidFillBadge =
+              word.emphasized &&
+              (word.style === 'highlightBox' ||
+                word.style === 'pillSolid' ||
+                word.style === 'skewBadge' ||
+                word.style === 'tapeSticker');
+            if (isSolidFillBadge) {
+              ctx.fillStyle =
+                word.color !== word.bgColor ? word.color : getContrastInk(effectiveAccent);
+            } else if (
+              word.emphasized &&
+              (word.style === 'doubleShadow' ||
+                word.style === 'retroLongShadow' ||
+                word.style === 'chromaticSplit')
+            ) {
+              ctx.fillStyle = word.color !== word.bgColor ? word.color : '#FFFFFF';
+            } else if (word.emphasized && word.style === 'neonTube') {
+              ctx.fillStyle = '#FFFFFF';
+            } else if (word.emphasized && word.style === 'gradientFill') {
+              const grad = ctx.createLinearGradient(
+                -word.width / 2,
+                -fontPx / 2,
+                word.width / 2,
+                fontPx / 2
+              );
+              grad.addColorStop(0, '#FFFFFF');
+              grad.addColorStop(0.45, effectiveColor);
+              grad.addColorStop(1, word.bgColor !== word.color ? word.bgColor : '#FACC15');
+              ctx.fillStyle = grad;
+            } else if (word.emphasized && word.style === 'goldFoil') {
+              const cycle = (timeSec * 0.7 + word.wordIndex * 0.16) % 1.8;
+              const glint = clamp01(cycle / 1.1);
+              const grad = ctx.createLinearGradient(
+                -word.width / 2,
+                -fontPx / 2,
+                word.width / 2,
+                fontPx / 2
+              );
+              grad.addColorStop(0, '#D97706');
+              grad.addColorStop(Math.max(0.05, glint * 0.65), '#FACC15');
+              grad.addColorStop(clamp01(0.15 + glint * 0.7), '#FFFBEB');
+              grad.addColorStop(Math.min(0.95, 0.3 + glint * 0.65), '#F59E0B');
+              grad.addColorStop(1, '#92400E');
+              ctx.fillStyle = grad;
+            } else if (word.emphasized && word.style === 'silverChrome') {
+              const cycle = (timeSec * 0.65 + word.wordIndex * 0.14) % 1.8;
+              const glint = clamp01(cycle / 1.1);
+              const grad = ctx.createLinearGradient(
+                -word.width / 2,
+                -fontPx * 0.5,
+                word.width / 2,
+                fontPx * 0.5
+              );
+              grad.addColorStop(0, '#475569');
+              grad.addColorStop(Math.max(0.05, glint * 0.6), '#CBD5E1');
+              grad.addColorStop(clamp01(0.14 + glint * 0.72), '#FFFFFF');
+              grad.addColorStop(Math.min(0.95, 0.32 + glint * 0.63), '#94A3B8');
+              grad.addColorStop(1, '#1E293B');
+              ctx.fillStyle = grad;
+            } else if (word.emphasized && word.style === 'fireAura') {
+              const grad = ctx.createLinearGradient(0, -fontPx * 0.5, 0, fontPx * 0.5);
+              grad.addColorStop(0, '#FFFBEB');
+              grad.addColorStop(0.35, '#FACC15');
+              grad.addColorStop(0.75, effectiveColor);
+              grad.addColorStop(1, '#DC2626');
+              ctx.fillStyle = grad;
+            } else if (word.emphasized && word.style === 'shimmerSweep') {
+              const sweepPhase = (timeSec * 0.9 + word.wordIndex * 0.18) % 1.9;
+              if (sweepPhase <= 1.0) {
+                const pos = sweepPhase;
+                const grad = ctx.createLinearGradient(
+                  -word.width * 0.6,
+                  -fontPx * 0.4,
+                  word.width * 0.6,
+                  fontPx * 0.4
+                );
+                const lo = clamp01(pos - 0.16);
+                const hi = clamp01(pos + 0.16);
+                grad.addColorStop(0, effectiveColor);
+                if (lo > 0.02) grad.addColorStop(lo, effectiveColor);
+                grad.addColorStop(clamp01(pos), '#FFFFFF');
+                if (hi < 0.98) grad.addColorStop(hi, effectiveColor);
+                grad.addColorStop(1, effectiveColor);
+                ctx.fillStyle = grad;
+              } else {
+                ctx.fillStyle = effectiveColor;
+              }
+            } else if (word.emphasized && word.style === 'strikeEmphasis') {
+              ctx.save();
+              ctx.globalAlpha = clamp01(alpha * 0.74);
+              ctx.fillStyle = effectiveColor;
+              ctx.fillText(drawTextStr, 0, 0);
+              ctx.restore();
+            } else {
+              ctx.fillStyle = effectiveColor;
+            }
+
+            if (!(word.emphasized && word.style === 'strikeEmphasis')) {
+              ctx.fillText(drawTextStr, 0, 0);
+            }
+          }
+
+          // Underlines, Strikes, Overlines & Circle Loops
           if (word.emphasized && word.style === 'underlineSweep') {
-            const underlineProgress = clamp01((elapsed - wordDelay) / Math.max(0.2, wordAnimDur * 1.1));
-            const uw = word.width * easeOutCubic(underlineProgress);
+            const uw = word.width * easeEmph;
             const uh = Math.max(3, fontPx * 0.085);
             ctx.save();
             ctx.shadowBlur = 0;
@@ -1420,13 +2059,93 @@ export function renderKineticScene(
             drawRoundedRect(ctx, -word.width / 2, fontPx * 0.52, uw, uh, uh / 2);
             ctx.fill();
             ctx.restore();
+          } else if (word.emphasized && word.style === 'brushUnderline') {
+            const uw = word.width * easeEmph;
+            const yBase = fontPx * 0.54;
+            ctx.save();
+            ctx.shadowBlur = 0;
+            ctx.strokeStyle = effectiveAccent;
+            ctx.lineCap = 'round';
+            ctx.lineWidth = Math.max(3.5, fontPx * 0.1);
+            ctx.beginPath();
+            ctx.moveTo(-word.width / 2, yBase + fontPx * 0.03);
+            ctx.quadraticCurveTo(
+              -word.width / 2 + uw * 0.5,
+              yBase - fontPx * 0.06,
+              -word.width / 2 + uw,
+              yBase + fontPx * 0.01
+            );
+            ctx.stroke();
+            ctx.restore();
+          } else if (word.emphasized && word.style === 'doubleUnderline') {
+            const uw1 = word.width * easeEmph;
+            const uw2 = word.width * easeOutCubic(clamp01((emphProgress - 0.15) / 0.85));
+            const uh = Math.max(2, fontPx * 0.055);
+            ctx.save();
+            ctx.shadowBlur = 0;
+            ctx.fillStyle = effectiveAccent;
+            drawRoundedRect(ctx, -word.width / 2, fontPx * 0.48, uw1, uh, uh / 2);
+            ctx.fill();
+            if (uw2 > 1) {
+              drawRoundedRect(ctx, -word.width / 2, fontPx * 0.6, uw2, uh, uh / 2);
+              ctx.fill();
+            }
+            ctx.restore();
+          } else if (word.emphasized && word.style === 'wavyUnderline') {
+            const uw = word.width * easeEmph;
+            const startX = -word.width / 2;
+            const yBase = fontPx * 0.54;
+            const amp = Math.max(2, fontPx * 0.055);
+            const freq = (Math.PI * 2) / Math.max(12, fontPx * 0.34);
+            ctx.save();
+            ctx.shadowBlur = 0;
+            ctx.strokeStyle = effectiveAccent;
+            ctx.lineCap = 'round';
+            ctx.lineWidth = Math.max(2.2, fontPx * 0.065);
+            ctx.beginPath();
+            const stepPx = Math.max(2, fontPx * 0.05);
+            for (let dx = 0; dx <= uw; dx += stepPx) {
+              const y = yBase + Math.sin(dx * freq - timeSec * 6) * amp;
+              if (dx === 0) ctx.moveTo(startX + dx, y);
+              else ctx.lineTo(startX + dx, y);
+            }
+            ctx.stroke();
+            ctx.restore();
+          } else if (word.emphasized && word.style === 'strikeEmphasis') {
+            const sw = word.width * 1.06 * easeEmph;
+            const sh = Math.max(3.5, fontPx * 0.1);
+            ctx.save();
+            ctx.shadowBlur = 0;
+            ctx.rotate(-0.035);
+            ctx.fillStyle = word.bgColor !== word.color ? word.bgColor : '#EF4444';
+            drawRoundedRect(ctx, -word.width * 0.53, -sh / 2 + fontPx * 0.02, sw, sh, sh / 2);
+            ctx.fill();
+            ctx.restore();
+          } else if (word.emphasized && word.style === 'circleLoop') {
+            const rx = word.width * 0.51;
+            const ry = fontPx * 0.6;
+            const startAng = -Math.PI * 0.62;
+            const endAng = startAng + Math.PI * 2.1 * easeEmph;
+            ctx.save();
+            ctx.shadowBlur = 0;
+            ctx.rotate(-0.035);
+            ctx.strokeStyle = effectiveAccent;
+            ctx.lineCap = 'round';
+            ctx.lineWidth = Math.max(2.4, fontPx * 0.065);
+            ctx.beginPath();
+            ctx.ellipse(0, 0, rx, ry, 0, startAng, endAng);
+            ctx.stroke();
+            ctx.restore();
           }
 
           // Typewriter blinking cursor on active last char
+          const isWordBeingTyped = explicitWordTiming
+            ? timeSec >= explicitWordTiming.startSec && timeSec <= explicitWordTiming.endSec
+            : visibleCharCount >= charsSoFar - word.displayText.length &&
+              visibleCharCount <= charsSoFar;
           if (
             preset === 'typewriter' &&
-            visibleCharCount >= charsSoFar - word.displayText.length &&
-            visibleCharCount <= charsSoFar &&
+            isWordBeingTyped &&
             Math.floor(timeSec * 3) % 2 === 0
           ) {
             const partialW = ctx.measureText(drawTextStr).width;
@@ -1606,9 +2325,14 @@ export function renderKineticScene(
 
     // TikTok / Reels / Shorts Safe Zone Overlay (for vertical / 9:16 & 4:5)
     if (showSocialSafeZones && width < height) {
-      const topZoneH = height * 0.12;
-      const botZoneH = height * 0.24;
-      const rightColW = width * 0.16;
+      const topZoneH = height * TIKTOK_SAFE_ZONE.top;
+      const botZoneH = height * (1 - TIKTOK_SAFE_ZONE.bottom);
+      const rightColW = width * (1 - TIKTOK_SAFE_ZONE.right);
+      const safeLeft = width * TIKTOK_SAFE_ZONE.left;
+      const safeW = width * (TIKTOK_SAFE_ZONE.right - TIKTOK_SAFE_ZONE.left);
+      const safeH = height * (TIKTOK_SAFE_ZONE.bottom - TIKTOK_SAFE_ZONE.top);
+      const safeCx = width * TIKTOK_SAFE_ZONE.centerX;
+      const safeCy = height * TIKTOK_SAFE_ZONE.centerY;
 
       ctx.setLineDash([]);
       ctx.fillStyle = 'rgba(244, 63, 94, 0.12)';
@@ -1621,18 +2345,41 @@ export function renderKineticScene(
 
       ctx.strokeStyle = 'rgba(244, 63, 94, 0.5)';
       ctx.setLineDash([4, 4]);
-      ctx.strokeRect(
-        width * 0.05,
-        topZoneH,
-        width - rightColW - width * 0.05,
-        height - topZoneH - botZoneH
-      );
+      ctx.strokeRect(safeLeft, topZoneH, safeW, safeH);
+
+      // TikTok Safe Zone Center Crosshairs & Target Bullseye
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.48)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([5, 4]);
+      ctx.beginPath();
+      ctx.moveTo(safeCx, topZoneH);
+      ctx.lineTo(safeCx, height - botZoneH);
+      ctx.moveTo(safeLeft, safeCy);
+      ctx.lineTo(safeLeft + safeW, safeCy);
+      ctx.stroke();
+
+      ctx.setLineDash([]);
+      const ringR = Math.max(5, Math.min(11, width * 0.016));
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.85)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(safeCx, safeCy, ringR, 0, Math.PI * 2);
+      ctx.stroke();
+
+      ctx.fillStyle = 'rgba(56, 189, 248, 0.95)';
+      ctx.beginPath();
+      ctx.arc(safeCx, safeCy, Math.max(2, ringR * 0.3), 0, Math.PI * 2);
+      ctx.fill();
 
       ctx.fillStyle = 'rgba(255, 255, 255, 0.72)';
       ctx.font = `600 ${Math.max(11, Math.round(width * 0.024))}px sans-serif`;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'top';
-      ctx.fillText('Vùng an toàn TikTok / Reels', width * 0.06, topZoneH + 6);
+      ctx.fillText('Vùng an toàn TikTok / Reels', safeLeft + 6, topZoneH + 6);
+
+      ctx.fillStyle = 'rgba(125, 211, 252, 0.88)';
+      ctx.font = `500 ${Math.max(9, Math.round(width * 0.019))}px sans-serif`;
+      ctx.fillText('Tâm Safe Zone', safeCx + ringR + 5, safeCy + 4);
     }
 
     ctx.restore();

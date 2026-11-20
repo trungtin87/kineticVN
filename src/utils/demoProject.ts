@@ -109,6 +109,7 @@ export function createDefaultProject(): StudioProject {
     },
     motion: {
       preset: 'wordPop',
+      transition: 'fade',
       inSpeed: 1.15,
       outFadeSec: 0.18,
       staggerAmount: 0.55,

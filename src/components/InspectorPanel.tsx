@@ -8,6 +8,7 @@ import {
   ChevronRight,
   Clock,
   Combine,
+  Crosshair,
   Film,
   Highlighter,
   ImagePlus,
@@ -33,6 +34,8 @@ import {
   BackgroundConfig,
   DYNAMIC_BG_PRESETS,
   EffectsConfig,
+  EMPHASIS_STYLE_PRESETS,
+  EmphasisCategory,
   EmphasisStyle,
   MotionConfig,
   ProgressBarConfig,
@@ -40,12 +43,15 @@ import {
   SubtitleCue,
   TextAlignMode,
   TextTransformMode,
+  TRANSITION_PRESETS,
+  TransitionCategory,
+  TransitionPresetId,
   TypographyConfig,
   WatermarkConfig,
   WatermarkPosition,
   WordStyleOverride,
 } from '../types/studio';
-import { preloadWatermarkImage } from '../engine/kineticRenderer';
+import { preloadWatermarkImage, TIKTOK_SAFE_ZONE } from '../engine/kineticRenderer';
 import {
   CURATED_GOOGLE_FONTS,
   ensureGoogleFontLoaded,
@@ -72,7 +78,12 @@ import {
   formatTimecodeShort,
   tokenizeCueText,
 } from '../utils/srtParser';
-import { STYLE_TEMPLATES, StyleTemplate } from '../utils/styleTemplates';
+import {
+  STYLE_TEMPLATE_CATEGORIES,
+  STYLE_TEMPLATES,
+  StyleTemplate,
+  StyleTemplateCategory,
+} from '../utils/styleTemplates';
 import { InspectorTab } from './TopBar';
 
 interface InspectorPanelProps {
@@ -109,6 +120,7 @@ interface InspectorPanelProps {
   onUpdateWatermark?: (patch: Partial<WatermarkConfig>, coalesceKey?: string) => void;
   onUpdateProgressBar?: (patch: Partial<ProgressBarConfig>, coalesceKey?: string) => void;
   onApplyTemplate?: (template: StyleTemplate) => void;
+  onOpenTemplatesModal?: () => void;
   onUploadBgVideo: (file: File) => void;
   onClearBgVideo: () => void;
   onUploadBgAudio?: (file: File) => void;
@@ -126,15 +138,14 @@ const EMPHASIS_SWATCHES = [
   '#FFFFFF',
 ];
 
-const EMPHASIS_STYLES: { id: EmphasisStyle; label: string }[] = [
-  { id: 'color', label: 'Đổi màu' },
-  { id: 'scaleColor', label: 'Phóng to + Màu' },
-  { id: 'highlightBox', label: 'Khối Highlight' },
-  { id: 'underlineSweep', label: 'Gạch chân chạy' },
-  { id: 'glow', label: 'Phát sáng Glow' },
-  { id: 'outlineBadge', label: 'Khung viền Pill' },
-  { id: 'doubleShadow', label: 'Bóng nổi 3D' },
-  { id: 'gradientFill', label: 'Chuyển sắc Gradient' },
+const EMPHASIS_STYLES = EMPHASIS_STYLE_PRESETS;
+
+const EMPHASIS_CATEGORIES: { id: 'ALL' | EmphasisCategory; label: string }[] = [
+  { id: 'ALL', label: 'Tất cả' },
+  { id: 'colorFx', label: 'Màu & Sáng' },
+  { id: 'badge', label: 'Khung & Nhãn' },
+  { id: 'lineDraw', label: 'Gạch & Vẽ' },
+  { id: 'dimension', label: '3D & Kim loại' },
 ];
 
 const ANCHOR_POINTS: { x: number; y: number; label: string }[] = [
@@ -183,6 +194,7 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
   onUpdateWatermark,
   onUpdateProgressBar,
   onApplyTemplate,
+  onOpenTemplatesModal,
   onUploadBgVideo,
   onClearBgVideo,
   onUploadBgAudio,
@@ -198,6 +210,9 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
   const lastEmphasisPreset =
     sharedEmphasisPreset !== undefined ? sharedEmphasisPreset : localEmphasisPreset;
   const [chipDragRange, setChipDragRange] = useState<{ start: number; end: number } | null>(null);
+  const [emphasisCategory, setEmphasisCategory] = useState<'ALL' | EmphasisCategory>('ALL');
+  const [templateCategory, setTemplateCategory] = useState<'ALL' | StyleTemplateCategory>('ALL');
+  const [transitionCategory, setTransitionCategory] = useState<'ALL' | TransitionCategory>('ALL');
   const [soundCategory, setSoundCategory] = useState<'ALL' | SoundscapeCategory>('ALL');
 
   const [customFonts, setCustomFonts] = useState<FontOption[]>(() => getStoredCustomFonts());
@@ -974,24 +989,51 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                           </div>
                         </div>
 
-                        {/* Emphasis Style Grid */}
-                        <div className="grid grid-cols-2 gap-1.5">
-                          {EMPHASIS_STYLES.map((st) => (
-                            <button
-                              key={st.id}
-                              type="button"
-                              onClick={() =>
-                                applyPatchToTargetWords(selectedCue, { style: st.id })
-                              }
-                              className={`px-2 py-1.5 text-[11px] rounded border transition-colors cursor-pointer text-left truncate ${
-                                currentStyle === st.id
-                                  ? 'bg-[#FF5A1F]/18 border-[#FF5A1F] text-white'
-                                  : 'bg-[#111318] border-white/8 text-[#9BA3B4] hover:text-white'
-                              }`}
-                            >
-                              {st.label}
-                            </button>
-                          ))}
+                        {/* Emphasis Style Grid (30 Styles with Category Filter) */}
+                        <div className="space-y-1.5">
+                          <div className="flex items-center justify-between text-[10px] text-[#8E95A5]">
+                            <span>Hiệu ứng nhấn từ</span>
+                            <span className="font-mono-tabular text-[#D5D9E2]">
+                              {EMPHASIS_STYLES.length} kiểu
+                            </span>
+                          </div>
+                          <div className="flex flex-wrap gap-1">
+                            {EMPHASIS_CATEGORIES.map((cat) => (
+                              <button
+                                key={cat.id}
+                                type="button"
+                                onClick={() => setEmphasisCategory(cat.id)}
+                                className={`px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer ${
+                                  emphasisCategory === cat.id
+                                    ? 'bg-[#FF5A1F] text-white'
+                                    : 'bg-[#111318] text-[#8E95A5] hover:text-white border border-white/8'
+                                }`}
+                              >
+                                {cat.label}
+                              </button>
+                            ))}
+                          </div>
+                          <div className="grid grid-cols-2 gap-1.5 max-h-52 overflow-y-auto pr-0.5">
+                            {EMPHASIS_STYLES.filter(
+                              (st) => emphasisCategory === 'ALL' || st.category === emphasisCategory
+                            ).map((st) => (
+                              <button
+                                key={st.id}
+                                type="button"
+                                onClick={() =>
+                                  applyPatchToTargetWords(selectedCue, { style: st.id })
+                                }
+                                title={st.label}
+                                className={`px-2 py-1.5 text-[11px] rounded border transition-colors cursor-pointer text-left truncate ${
+                                  currentStyle === st.id
+                                    ? 'bg-[#FF5A1F]/18 border-[#FF5A1F] text-white'
+                                    : 'bg-[#111318] border-white/8 text-[#9BA3B4] hover:text-white'
+                                }`}
+                              >
+                                {st.label}
+                              </button>
+                            ))}
+                          </div>
                         </div>
 
                         {/* Font Size Scale Slider (Per-Word) */}
@@ -1295,6 +1337,26 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                       </select>
                     </div>
                   </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[11px] text-[#8E95A5]">Transition thoát câu này</label>
+                    <select
+                      value={selectedCue.customTransition || ''}
+                      onChange={(e) =>
+                        onUpdateCue(selectedCue.id, {
+                          customTransition: (e.target.value || null) as TransitionPresetId | null,
+                        })
+                      }
+                      className="w-full bg-[#171A21] border border-white/10 rounded px-2 py-1.5 text-xs text-[#E2E5EC] focus:outline-none focus:border-[#FF5A1F]"
+                    >
+                      <option value="">Theo mặc định ({TRANSITION_PRESETS.find((t) => t.id === (motion.transition || 'fade'))?.name || 'Mờ dần mượt'})</option>
+                      {TRANSITION_PRESETS.map((tr) => (
+                        <option key={tr.id} value={tr.id}>
+                          {tr.name} — {tr.desc}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
               </>
             )}
@@ -1311,14 +1373,46 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                     <Palette className="w-3.5 h-3.5 text-[#FF5A1F]" />
                     <span>Style Template 1-Click</span>
                   </label>
-                  <span className="text-[10px] text-[#8E95A5]">{STYLE_TEMPLATES.length} mẫu</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] text-[#8E95A5]">{STYLE_TEMPLATES.length} mẫu</span>
+                    {onOpenTemplatesModal && (
+                      <button
+                        type="button"
+                        onClick={onOpenTemplatesModal}
+                        className="px-2 py-0.5 rounded bg-[#FF5A1F]/18 hover:bg-[#FF5A1F]/30 border border-[#FF5A1F]/40 text-[10px] font-semibold text-[#FF7A48] hover:text-white transition-colors cursor-pointer"
+                      >
+                        Xem tất cả
+                      </button>
+                    )}
+                  </div>
                 </div>
-                <div className="grid grid-cols-2 gap-1.5 max-h-44 overflow-y-auto pr-0.5">
-                  {STYLE_TEMPLATES.map((tpl) => {
+
+                <div className="flex flex-wrap gap-1">
+                  {STYLE_TEMPLATE_CATEGORIES.map((cat) => (
+                    <button
+                      key={cat.id}
+                      type="button"
+                      onClick={() => setTemplateCategory(cat.id)}
+                      className={`px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer ${
+                        templateCategory === cat.id
+                          ? 'bg-[#FF5A1F] text-white'
+                          : 'bg-[#171A21] text-[#9BA3B4] hover:text-white border border-white/8'
+                      }`}
+                    >
+                      {cat.label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="grid grid-cols-2 gap-1.5 max-h-52 overflow-y-auto pr-0.5">
+                  {STYLE_TEMPLATES.filter(
+                    (tpl) => templateCategory === 'ALL' || tpl.category === templateCategory
+                  ).map((tpl) => {
                     const isMatching =
                       typography.fontFamily === tpl.typography.fontFamily &&
                       motion.preset === tpl.motion.preset &&
-                      background.presetId === tpl.background.presetId;
+                      background.presetId === tpl.background.presetId &&
+                      typography.emphasisColor === tpl.typography.emphasisColor;
                     return (
                       <button
                         key={tpl.id}
@@ -1444,6 +1538,87 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                   className="w-4 h-4 accent-[#FF5A1F]"
                 />
               </label>
+            </div>
+
+            {/* 1B. Kho Hiệu Ứng Transition (Thoát câu / Chuyển cảnh) */}
+            <div className="space-y-2.5 pt-4 border-t border-white/8">
+              <div className="flex items-center justify-between gap-2">
+                <label className="text-xs font-semibold text-[#E2E5EC]">
+                  Kho hiệu ứng Transition (Chuyển câu)
+                </label>
+                <span className="text-[11px] text-[#8E95A5]">
+                  {TRANSITION_PRESETS.length} kiểu
+                </span>
+              </div>
+
+              <div className="flex flex-wrap gap-1">
+                {(
+                  [
+                    { id: 'ALL', label: 'Tất cả' },
+                    { id: 'smooth', label: 'Mượt mà' },
+                    { id: 'directional', label: 'Trượt hướng' },
+                    { id: 'kinetic', label: 'Động lực' },
+                    { id: 'fx', label: 'Kỹ xảo' },
+                  ] as const
+                ).map((cat) => (
+                  <button
+                    key={cat.id}
+                    type="button"
+                    onClick={() => setTransitionCategory(cat.id)}
+                    className={`px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer ${
+                      transitionCategory === cat.id
+                        ? 'bg-[#38BDF8] text-[#070B12] font-semibold'
+                        : 'bg-[#171A21] text-[#9BA3B4] hover:text-white border border-white/8'
+                    }`}
+                  >
+                    {cat.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="grid grid-cols-2 gap-1.5 max-h-52 overflow-y-auto pr-0.5">
+                {TRANSITION_PRESETS.filter(
+                  (tr) => transitionCategory === 'ALL' || tr.category === transitionCategory
+                ).map((tr) => {
+                  const active = (motion.transition || 'fade') === tr.id;
+                  return (
+                    <button
+                      key={tr.id}
+                      type="button"
+                      onClick={() => onUpdateMotion({ transition: tr.id })}
+                      className={`p-2 rounded-md border text-left transition-colors cursor-pointer ${
+                        active
+                          ? 'bg-[#38BDF8]/16 border-[#38BDF8] text-white'
+                          : 'bg-[#171A21] border-white/8 text-[#D5D9E2] hover:bg-[#1D212B]'
+                      }`}
+                    >
+                      <div className="text-xs font-semibold truncate">{tr.name}</div>
+                      <div className="text-[10px] text-[#8E95A5] truncate">{tr.desc}</div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="space-y-1 pt-1">
+                <div className="flex justify-between text-[11px] text-[#8E95A5]">
+                  <span>Thời gian chuyển cảnh (Transition)</span>
+                  <span className="font-mono-tabular">
+                    {(motion.transition || 'fade') === 'none'
+                      ? '0.00s (Cắt)'
+                      : `${motion.outFadeSec.toFixed(2)}s`}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={0.06}
+                  max={0.65}
+                  step={0.02}
+                  disabled={(motion.transition || 'fade') === 'none'}
+                  value={Math.max(0.06, Math.min(0.65, motion.outFadeSec))}
+                  onChange={(e) => onUpdateMotion({ outFadeSec: Number(e.target.value) })}
+                  className="w-full disabled:opacity-40"
+                />
+              </div>
             </div>
 
             {/* 2. Font & Google Fonts Integration */}
@@ -1712,6 +1887,31 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                     );
                   })}
                 </div>
+                {(() => {
+                  const isAtTikTokCenter =
+                    Math.abs(typography.posX - TIKTOK_SAFE_ZONE.centerX) < 0.015 &&
+                    Math.abs(typography.posY - TIKTOK_SAFE_ZONE.centerY) < 0.015;
+                  return (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onUpdateTypography({
+                          posX: TIKTOK_SAFE_ZONE.centerX,
+                          posY: TIKTOK_SAFE_ZONE.centerY,
+                        })
+                      }
+                      title="Định tâm chữ vào vùng an toàn của video dọc 9:16 (phím T)"
+                      className={`w-full py-1.5 px-2.5 rounded border text-[11px] font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
+                        isAtTikTokCenter
+                          ? 'bg-[#38BDF8]/20 border-[#38BDF8] text-[#38BDF8]'
+                          : 'bg-[#171A21] border-white/10 text-[#9BA3B4] hover:text-[#38BDF8] hover:border-[#38BDF8]/40'
+                      }`}
+                    >
+                      <Crosshair className="w-3.5 h-3.5 shrink-0" />
+                      <span>Định tâm vùng Safe Zone TikTok 9:16</span>
+                    </button>
+                  );
+                })()}
               </div>
 
               {/* Colors, Stroke & Shadow */}
@@ -1734,6 +1934,26 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                     className="w-6 h-5 bg-transparent border-0 cursor-pointer"
                   />
                 </label>
+              </div>
+
+              <div className="space-y-1">
+                <div className="flex justify-between text-[11px] text-[#8E95A5]">
+                  <span>Kiểu nhấn từ mặc định</span>
+                  <span className="font-mono-tabular">{EMPHASIS_STYLES.length} kiểu</span>
+                </div>
+                <select
+                  value={typography.emphasisStyle}
+                  onChange={(e) =>
+                    onUpdateTypography({ emphasisStyle: e.target.value as EmphasisStyle })
+                  }
+                  className="w-full bg-[#171A21] border border-white/8 rounded-md px-2.5 py-1.5 text-xs text-[#E2E5EC] focus:outline-none focus:border-[#FF5A1F]"
+                >
+                  {EMPHASIS_STYLES.map((st) => (
+                    <option key={st.id} value={st.id}>
+                      {st.label}
+                    </option>
+                  ))}
+                </select>
               </div>
 
               <div className="grid grid-cols-2 gap-3">

@@ -5,6 +5,8 @@ import {
   FileCode2,
   FolderOpen,
   FolderUp,
+  Keyboard,
+  Palette,
   Redo2,
   RotateCcw,
   Save,
@@ -30,8 +32,10 @@ interface TopBarProps {
   onExportProjectJson?: () => void;
   onImportProjectJson?: (file: File) => void;
   onOpenImport: () => void;
+  onOpenTemplates?: () => void;
   onResetDemo: () => void;
   onOpenExport: () => void;
+  onOpenShortcuts?: () => void;
 }
 
 export const TopBar: React.FC<TopBarProps> = ({
@@ -49,8 +53,10 @@ export const TopBar: React.FC<TopBarProps> = ({
   onExportProjectJson,
   onImportProjectJson,
   onOpenImport,
+  onOpenTemplates,
   onResetDemo,
   onOpenExport,
+  onOpenShortcuts,
 }) => {
   return (
     <header className="h-12 lg:h-14 px-3 lg:px-5 bg-[#111318] border-b border-white/8 flex items-center justify-between gap-2 lg:gap-6 shrink-0">
@@ -128,6 +134,16 @@ export const TopBar: React.FC<TopBarProps> = ({
         >
           Nền động &amp; Video
         </button>
+        {onOpenTemplates && (
+          <button
+            type="button"
+            onClick={onOpenTemplates}
+            className="text-sm font-medium text-[#FF7A48] hover:text-[#FF9670] whitespace-nowrap shrink-0 py-1 border-b-2 border-transparent transition-colors cursor-pointer flex items-center gap-1.5"
+          >
+            <Palette className="w-3.5 h-3.5" />
+            <span>Mẫu Style</span>
+          </button>
+        )}
         <button
           type="button"
           onClick={onOpenImport}
@@ -222,6 +238,30 @@ export const TopBar: React.FC<TopBarProps> = ({
           >
             <FileCode2 className="w-4 h-4" />
           </a>
+        )}
+
+        {onOpenShortcuts && (
+          <button
+            type="button"
+            onClick={onOpenShortcuts}
+            title="Hệ thống phím tắt (?)"
+            aria-label="Phím tắt hệ thống"
+            className="hidden sm:flex p-2 text-[#8E95A5] hover:text-[#F4F5F7] hover:bg-white/5 rounded-md transition-colors cursor-pointer shrink-0"
+          >
+            <Keyboard className="w-4 h-4" />
+          </button>
+        )}
+
+        {onOpenTemplates && (
+          <button
+            type="button"
+            onClick={onOpenTemplates}
+            title="Thư viện Style Template 1-Click"
+            aria-label="Mẫu Style 1-Click"
+            className="lg:hidden p-2 text-[#FF7A48] hover:text-white hover:bg-white/5 rounded-md transition-colors cursor-pointer shrink-0"
+          >
+            <Palette className="w-4 h-4" />
+          </button>
         )}
 
         <button

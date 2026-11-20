@@ -86,9 +86,9 @@ export const CueListPanel: React.FC<CueListPanelProps> = ({
             <button
               type="button"
               onClick={onOpenImport}
-              className="text-xs font-medium text-[#FF5A1F] hover:text-[#FF7847] transition-colors cursor-pointer whitespace-nowrap"
+              className="px-2 py-0.5 rounded bg-[#FF5A1F]/15 hover:bg-[#FF5A1F]/25 border border-[#FF5A1F]/40 text-xs font-semibold text-[#FF7A48] hover:text-[#FF9670] transition-colors cursor-pointer whitespace-nowrap"
             >
-              Dán SRT trực tiếp
+              Soạn nhanh / SRT
             </button>
           </div>
         </div>

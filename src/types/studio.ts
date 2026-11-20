@@ -28,7 +28,12 @@ export type AnimationPresetId =
   | 'revealWipe'
   | 'spiralTwist'
   | 'dominoTilt'
-  | 'floatDrift';
+  | 'floatDrift'
+  | 'inkReveal'
+  | 'cinemaFade'
+  | 'whisperRise'
+  | 'bookTurn'
+  | 'spotlightWord';
 
 export type EmphasisStyle =
   | 'color'
@@ -38,7 +43,49 @@ export type EmphasisStyle =
   | 'glow'
   | 'outlineBadge'
   | 'doubleShadow'
-  | 'gradientFill';
+  | 'gradientFill'
+  | 'markerHighlight'
+  | 'neonTube'
+  | 'brushUnderline'
+  | 'doubleUnderline'
+  | 'wavyUnderline'
+  | 'strikeEmphasis'
+  | 'bracketTag'
+  | 'cornerFrame'
+  | 'pillSolid'
+  | 'skewBadge'
+  | 'tapeSticker'
+  | 'hollowStroke'
+  | 'chromaticSplit'
+  | 'goldFoil'
+  | 'silverChrome'
+  | 'fireAura'
+  | 'comicPop'
+  | 'retroLongShadow'
+  | 'pulseHalo'
+  | 'shimmerSweep'
+  | 'topBarAccent'
+  | 'circleLoop';
+
+export type TransitionPresetId =
+  | 'fade'
+  | 'slideUpOut'
+  | 'slideDownOut'
+  | 'slideLeftOut'
+  | 'slideRightOut'
+  | 'zoomOutShrink'
+  | 'zoomInBurst'
+  | 'blurDissolve'
+  | 'glitchCut'
+  | 'wipeLeft'
+  | 'wipeRight'
+  | 'splitCurtainOut'
+  | 'flipOut'
+  | 'scatterBlow'
+  | 'dropGravity'
+  | 'spinShrink'
+  | 'flashCut'
+  | 'none';
 
 export type TextAlignMode = 'left' | 'center' | 'right';
 export type TextTransformMode = 'none' | 'uppercase' | 'titlecase';
@@ -58,7 +105,11 @@ export type DynamicBgPresetId =
   | 'matrixRain'
   | 'sunsetSynth'
   | 'prismShards'
-  | 'audioBars';
+  | 'audioBars'
+  | 'rainyNight'
+  | 'warmEmbers'
+  | 'noirSpotlight'
+  | 'goldenMist';
 
 export interface WordStyleOverride {
   emphasized?: boolean;
@@ -93,6 +144,7 @@ export interface SubtitleCue {
   customPos?: { x: number; y: number } | null; // normalized 0..1
   customAlign?: TextAlignMode | null;
   customAnimation?: AnimationPresetId | null;
+  customTransition?: TransitionPresetId | null;
   customFont?: string | null;
   customScale?: number | null;
 }
@@ -121,8 +173,9 @@ export interface TypographyConfig {
 
 export interface MotionConfig {
   preset: AnimationPresetId;
+  transition?: TransitionPresetId;
   inSpeed: number; // 0.3..2.5
-  outFadeSec: number; // 0..0.5
+  outFadeSec: number; // 0..0.7
   staggerAmount: number; // 0..1
   audioReactiveBounce: boolean;
 }
@@ -264,6 +317,11 @@ export const ANIMATION_PRESETS: {
   { id: 'spiralTwist', name: '3D Twist', desc: 'Xoay vặn trục 3D thu phóng tiến vào' },
   { id: 'dominoTilt', name: 'Domino Knock', desc: 'Đổ domino nối tiếp rồi đứng thẳng' },
   { id: 'floatDrift', name: 'Cinema Drift', desc: 'Trôi bồng bềnh điện ảnh nhẹ nhàng' },
+  { id: 'inkReveal', name: 'Ink Blossom', desc: 'Thấm mực mềm mại kiểu cổ phong, thơ ca' },
+  { id: 'cinemaFade', name: 'Cinema Fade', desc: 'Hiện chậm điện ảnh tinh tế, trang trọng' },
+  { id: 'whisperRise', name: 'Whisper Float', desc: 'Nổi nhẹ thì thầm cho tâm sự, chữa lành' },
+  { id: 'bookTurn', name: 'Page Unfold', desc: 'Mở trang sách lịch lãm cho sách nói' },
+  { id: 'spotlightWord', name: 'Word Spotlight', desc: 'Rọi sáng từng từ theo nhịp kể chuyện' },
 ];
 
 export const DYNAMIC_BG_PRESETS: {
@@ -350,4 +408,97 @@ export const DYNAMIC_BG_PRESETS: {
     desc: 'Thanh tần số Equalizer nhảy theo Audio',
     defaults: { primary: '#090B10', secondary: '#151B26', accent: '#FF5A1F' },
   },
+  {
+    id: 'rainyNight',
+    name: 'Mưa Đêm Tâm Sự',
+    desc: 'Hạt mưa rơi chéo kèm ánh đèn bokeh đêm',
+    defaults: { primary: '#070B14', secondary: '#132033', accent: '#38BDF8' },
+  },
+  {
+    id: 'warmEmbers',
+    name: 'Đom Đóm & Lửa Ấm',
+    desc: 'Đom đóm vàng ấm bay bổng truyện đêm khuya',
+    defaults: { primary: '#120A07', secondary: '#2B160C', accent: '#F59E0B' },
+  },
+  {
+    id: 'noirSpotlight',
+    name: 'Đèn Điều Tra Noir',
+    desc: 'Luồng đèn sân khấu quét bụi mờ bí ẩn',
+    defaults: { primary: '#06070A', secondary: '#181B22', accent: '#EF4444' },
+  },
+  {
+    id: 'goldenMist',
+    name: 'Sương Mù Cổ Phong',
+    desc: 'Làn sương bình minh trôi nhẹ thanh tịnh',
+    defaults: { primary: '#14110E', secondary: '#2E251B', accent: '#EAB308' },
+  },
 ];
+
+export type EmphasisCategory = 'colorFx' | 'badge' | 'lineDraw' | 'dimension';
+
+export const EMPHASIS_STYLE_PRESETS: {
+  id: EmphasisStyle;
+  label: string;
+  category: EmphasisCategory;
+}[] = [
+  { id: 'color', label: 'Đổi màu', category: 'colorFx' },
+  { id: 'scaleColor', label: 'Phóng to + Màu', category: 'colorFx' },
+  { id: 'glow', label: 'Phát sáng Glow', category: 'colorFx' },
+  { id: 'neonTube', label: 'Đèn Neon kép', category: 'colorFx' },
+  { id: 'pulseHalo', label: 'Nhịp đập hào quang', category: 'colorFx' },
+  { id: 'fireAura', label: 'Hào quang rực cháy', category: 'colorFx' },
+  { id: 'gradientFill', label: 'Chuyển sắc Gradient', category: 'colorFx' },
+  { id: 'shimmerSweep', label: 'Tia sáng lướt chữ', category: 'colorFx' },
+  { id: 'highlightBox', label: 'Khối Highlight', category: 'badge' },
+  { id: 'pillSolid', label: 'Thẻ Pill bo tròn', category: 'badge' },
+  { id: 'outlineBadge', label: 'Khung viền Pill', category: 'badge' },
+  { id: 'skewBadge', label: 'Nhãn nghiêng tốc độ', category: 'badge' },
+  { id: 'tapeSticker', label: 'Miếng dán Sticker', category: 'badge' },
+  { id: 'markerHighlight', label: 'Bút dạ quang', category: 'badge' },
+  { id: 'topBarAccent', label: 'Thanh nhấn đỉnh đầu', category: 'badge' },
+  { id: 'underlineSweep', label: 'Gạch chân chạy', category: 'lineDraw' },
+  { id: 'brushUnderline', label: 'Nét cọ gạch chân', category: 'lineDraw' },
+  { id: 'doubleUnderline', label: 'Gạch chân kép', category: 'lineDraw' },
+  { id: 'wavyUnderline', label: 'Gạch sóng uốn', category: 'lineDraw' },
+  { id: 'strikeEmphasis', label: 'Gạch ngang kịch tính', category: 'lineDraw' },
+  { id: 'bracketTag', label: 'Ngoặc vuông [Tag]', category: 'lineDraw' },
+  { id: 'cornerFrame', label: 'Khung ngắm Focus', category: 'lineDraw' },
+  { id: 'circleLoop', label: 'Khoanh tròn bút mực', category: 'lineDraw' },
+  { id: 'doubleShadow', label: 'Bóng nổi 3D', category: 'dimension' },
+  { id: 'retroLongShadow', label: 'Bóng dài Retro 45°', category: 'dimension' },
+  { id: 'comicPop', label: 'Truyện tranh Pop', category: 'dimension' },
+  { id: 'hollowStroke', label: 'Chữ rỗng viền sáng', category: 'dimension' },
+  { id: 'chromaticSplit', label: 'Tách kênh RGB', category: 'dimension' },
+  { id: 'goldFoil', label: 'Vàng ánh kim', category: 'dimension' },
+  { id: 'silverChrome', label: 'Kim loại Chrome', category: 'dimension' },
+];
+
+export type TransitionCategory = 'smooth' | 'directional' | 'kinetic' | 'fx';
+
+export const TRANSITION_PRESETS: {
+  id: TransitionPresetId;
+  name: string;
+  desc: string;
+  category: TransitionCategory;
+}[] = [
+  { id: 'fade', name: 'Mờ dần mượt', desc: 'Chuyển cảnh tan mờ tự nhiên', category: 'smooth' },
+  { id: 'blurDissolve', name: 'Tan mờ điện ảnh', desc: 'Làm mờ ống kính trước khi chuyển câu', category: 'smooth' },
+  { id: 'none', name: 'Cắt dứt khoát', desc: 'Chuyển câu tức thì không trễ nhịp', category: 'smooth' },
+  { id: 'slideUpOut', name: 'Trượt lên trên', desc: 'Lướt nhẹ lên trên biến mất', category: 'directional' },
+  { id: 'slideDownOut', name: 'Hạ xuống dưới', desc: 'Chìm nhẹ xuống dưới gọn gàng', category: 'directional' },
+  { id: 'slideLeftOut', name: 'Vút sang trái', desc: 'Lao ngang sang trái tốc độ cao', category: 'directional' },
+  { id: 'slideRightOut', name: 'Vút sang phải', desc: 'Lao ngang sang phải tốc độ cao', category: 'directional' },
+  { id: 'wipeLeft', name: 'Quét màn che trái', desc: 'Màn chắn quét xóa sắc nét từ phải qua trái', category: 'directional' },
+  { id: 'wipeRight', name: 'Quét màn che phải', desc: 'Màn chắn quét xóa sắc nét từ trái qua phải', category: 'directional' },
+  { id: 'zoomOutShrink', name: 'Thu nhỏ vào tâm', desc: 'Thu gọn mượt về tâm khung hình', category: 'kinetic' },
+  { id: 'zoomInBurst', name: 'Phóng xuyên camera', desc: 'Phóng to bứt phá qua ống kính', category: 'kinetic' },
+  { id: 'splitCurtainOut', name: 'Khép rèm hai bên', desc: 'Tách chữ dạt sang hai phía khung hình', category: 'kinetic' },
+  { id: 'flipOut', name: 'Lật thẻ biến mất', desc: 'Gập phẳng 3D theo trục ngang', category: 'kinetic' },
+  { id: 'dropGravity', name: 'Rơi tự do trọng lực', desc: 'Từng từ rơi nhanh dần theo trọng lực', category: 'kinetic' },
+  { id: 'spinShrink', name: 'Xoay vòng thu nhỏ', desc: 'Xoay nghiêng và thu nhỏ biến mất', category: 'kinetic' },
+  { id: 'scatterBlow', name: 'Thổi tan nhiều hướng', desc: 'Các từ bay tản mát theo nhiều góc', category: 'fx' },
+  { id: 'glitchCut', name: 'Nhiễu tách kênh RGB', desc: 'Rung giật tách kênh trước khi cắt cảnh', category: 'fx' },
+  { id: 'flashCut', name: 'Chớp sáng chuyển cảnh', desc: 'Bừng sáng nhẹ một nhịp rồi chuyển câu', category: 'fx' },
+];
+
+

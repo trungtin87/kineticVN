@@ -100,6 +100,27 @@ export const SOUNDSCAPE_LAYERS: SoundscapeLayerMeta[] = [
     category: 'music',
     badge: 'Inspire',
   },
+  {
+    id: 'mysteryTick',
+    name: 'Đồng hồ Điều tra',
+    desc: 'Nhịp tích tắc trầm lắng cho trinh thám, bí ẩn',
+    category: 'music',
+    badge: 'Bí ẩn',
+  },
+  {
+    id: 'bambooFlutePad',
+    name: 'Sáo Trúc Cổ Phong',
+    desc: 'Âm vang sáo trúc ngũ cung sâu lắng thanh tao',
+    category: 'music',
+    badge: 'Sáo trúc',
+  },
+  {
+    id: 'cafeAmbience',
+    name: 'Góc Cà Phê Ấm',
+    desc: 'Không gian quán nhỏ ấm cúng cho đọc sách, vlog',
+    category: 'nature',
+    badge: 'Cà phê',
+  },
 ];
 
 export const SOUNDSCAPE_COMBOS: SoundscapeComboPreset[] = [
@@ -144,6 +165,24 @@ export const SOUNDSCAPE_COMBOS: SoundscapeComboPreset[] = [
     name: 'Truyền Cảm Hứng',
     desc: 'Pad tinh tú + Piano dịu nhẹ',
     layers: { cosmicShimmer: 0.62, warmPianoPad: 0.45 },
+  },
+  {
+    id: 'detective-noir',
+    name: 'Hồ Sơ Bí Ẩn',
+    desc: 'Đồng hồ điều tra + Sub drone + Mưa nhẹ',
+    layers: { mysteryTick: 0.52, cinemaDrone: 0.5, gentleRain: 0.25 },
+  },
+  {
+    id: 'bamboo-zen',
+    name: 'Sơn Thủy Cổ Phong',
+    desc: 'Sáo trúc + Suối nguồn + Chim hót sáng',
+    layers: { bambooFlutePad: 0.58, streamWater: 0.36, morningBirds: 0.28 },
+  },
+  {
+    id: 'book-cafe',
+    name: 'Đọc Sách Quán Nhỏ',
+    desc: 'Góc cà phê + Đĩa than Lo-fi + Mưa bên hiên',
+    layers: { cafeAmbience: 0.52, lofiVinyl: 0.42, gentleRain: 0.28 },
   },
 ];
 
@@ -588,6 +627,98 @@ function synthesizeLayer(layerId: string): StereoTrackBuffer {
       lpR = lpR * (1 - cutoff) + (rawSig + pinkR.next(rand() * 2 - 1) * 0.02) * cutoff * 3.5;
       rawL[i] = lpL;
       rawR[i] = lpR;
+    }
+  } else if (layerId === 'mysteryTick') {
+    // Deep noir ticking clock (12 ticks across 12s) + tense dark room tone
+    let roomL = 0;
+    let roomR = 0;
+    for (let i = 0; i < GEN_SAMPLES; i++) {
+      const t = i / SAMPLE_RATE;
+      const nL = pinkL.next(rand() * 2 - 1);
+      const nR = pinkR.next(rand() * 2 - 1);
+      roomL = roomL * 0.97 + nL * 0.03;
+      roomR = roomR * 0.97 + nR * 0.03;
+      const pulse = 0.03 * Math.sin(2 * Math.PI * 58 * t) * (0.6 + 0.4 * Math.sin((2 * Math.PI * t) / 6));
+      rawL[i] = roomL * 0.22 + pulse;
+      rawR[i] = roomR * 0.22 + pulse;
+    }
+    for (let sec = 0; sec < 12; sec++) {
+      const tickStart = Math.floor(sec * SAMPLE_RATE);
+      const isStrong = sec % 2 === 0;
+      const dur = Math.floor(0.055 * SAMPLE_RATE);
+      const f = isStrong ? 920 : 690;
+      const pan = isStrong ? -0.18 : 0.18;
+      addResonantBurst(rawL, rawR, tickStart, dur, f, isStrong ? 0.16 : 0.11, pan, f * 0.72);
+    }
+  } else if (layerId === 'bambooFlutePad') {
+    // Breath-like pentatonic bamboo flute phrases over warm drone
+    const scale = [293.66, 329.63, 392.0, 440.0, 523.25, 587.33];
+    let breathL = 0;
+    let breathR = 0;
+    for (let i = 0; i < GEN_SAMPLES; i++) {
+      const t = i / SAMPLE_RATE;
+      const nL = pinkL.next(rand() * 2 - 1);
+      const nR = pinkR.next(rand() * 2 - 1);
+      breathL = breathL * 0.94 + nL * 0.06;
+      breathR = breathR * 0.94 + nR * 0.06;
+      const drone =
+        (Math.sin(2 * Math.PI * 146.83 * t) + 0.45 * Math.sin(2 * Math.PI * 220.0 * t)) * 0.04;
+      rawL[i] = drone + breathL * 0.05;
+      rawR[i] = drone + breathR * 0.05;
+    }
+    const phraseOffsets = [0.4, 2.2, 4.6, 7.1, 9.4];
+    phraseOffsets.forEach((secOff, pIdx) => {
+      const start = Math.floor(secOff * SAMPLE_RATE);
+      const dur = Math.floor((1.5 + (pIdx % 2) * 0.6) * SAMPLE_RATE);
+      const freq = scale[(pIdx * 2 + 1) % scale.length];
+      const nextFreq = scale[(pIdx * 2 + 2) % scale.length];
+      const pan = (pIdx % 2 === 0 ? -1 : 1) * 0.25;
+      const panL = Math.cos(((pan + 1) * Math.PI) / 4);
+      const panR = Math.sin(((pan + 1) * Math.PI) / 4);
+      let phase = 0;
+      for (let k = 0; k < dur && start + k < GEN_SAMPLES; k++) {
+        const u = k / dur;
+        const t = k / SAMPLE_RATE;
+        const env = Math.sin(Math.min(1, u * 3.5) * (Math.PI / 2)) * Math.sin(u * Math.PI);
+        const slide = u < 0.22 ? freq * (0.94 + 0.06 * (u / 0.22)) : freq + (nextFreq - freq) * Math.max(0, (u - 0.65) * 1.4);
+        const vibrato = 1 + 0.0055 * Math.sin(2 * Math.PI * 5.2 * t);
+        phase += (2 * Math.PI * slide * vibrato) / SAMPLE_RATE;
+        const fluteTone =
+          (Math.sin(phase) + 0.22 * Math.sin(phase * 2) + 0.07 * Math.sin(phase * 3)) * 0.11;
+        const air = pinkL.next(rand() * 2 - 1) * 0.025;
+        const sig = (fluteTone + air) * env;
+        rawL[start + k] += sig * panL;
+        rawR[start + k] += sig * panR;
+      }
+    });
+  } else if (layerId === 'cafeAmbience') {
+    // Warm cozy room murmur + gentle ceramic cup clinks
+    let murL = 0;
+    let murR = 0;
+    let prevL = 0;
+    let prevR = 0;
+    for (let i = 0; i < GEN_SAMPLES; i++) {
+      const t = i / SAMPLE_RATE;
+      const swell = 0.65 + 0.35 * Math.sin((2 * Math.PI * t) / 4.0) * Math.cos((2 * Math.PI * t) / 6.0);
+      const nL = pinkL.next(rand() * 2 - 1);
+      const nR = pinkR.next(rand() * 2 - 1);
+      murL = murL * 0.89 + nL * 0.11;
+      murR = murR * 0.89 + nR * 0.11;
+      const warmL = murL - prevL * 0.45;
+      const warmR = murR - prevR * 0.45;
+      prevL = murL;
+      prevR = murR;
+      rawL[i] = warmL * 0.32 * swell;
+      rawR[i] = warmR * 0.32 * swell;
+    }
+    // Delicate ceramic clinks & soft wood taps
+    for (let c = 0; c < 9; c++) {
+      const start = Math.floor((0.6 + (c / 9) * (LOOP_SEC - 1.2) + rand() * 0.3) * SAMPLE_RATE);
+      const dur = Math.floor(0.14 * SAMPLE_RATE);
+      const pan = (rand() - 0.5) * 1.4;
+      const f = 2200 + rand() * 1400;
+      addResonantBurst(rawL, rawR, start, dur, f, 0.06, pan);
+      addResonantBurst(rawL, rawR, start, dur, f * 1.52, 0.035, pan);
     }
   } else {
     // cosmicShimmer

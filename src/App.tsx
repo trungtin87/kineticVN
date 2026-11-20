@@ -6,6 +6,8 @@ import { ImportSrtModal } from './components/ImportSrtModal';
 import { InspectorPanel } from './components/InspectorPanel';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { PreviewStage } from './components/PreviewStage';
+import { ShortcutsModal } from './components/ShortcutsModal';
+import { StyleTemplatesModal } from './components/StyleTemplatesModal';
 import { TimelineDock } from './components/TimelineDock';
 import { InspectorTab, TopBar } from './components/TopBar';
 import {
@@ -21,7 +23,7 @@ import {
   WatermarkConfig,
   WordStyleOverride,
 } from './types/studio';
-import { preloadWatermarkImage } from './engine/kineticRenderer';
+import { preloadWatermarkImage, TIKTOK_SAFE_ZONE } from './engine/kineticRenderer';
 import {
   loadLastEmphasisPreset,
   resolveEmphasisTemplate,
@@ -139,6 +141,10 @@ export default function App() {
 
   const [importOpen, setImportOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [templatesOpen, setTemplatesOpen] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [showSafeGuides, setShowSafeGuides] = useState(true);
   const [fontsTick, setFontsTick] = useState(0);
 
   const audioElRef = useRef<HTMLAudioElement | null>(null);
@@ -671,41 +677,7 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isPlaying, isLooping, totalDurationSec, audioDurationSec, syncBgVideosAtTime, syncBgAudioAtTime]);
 
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-
-      if ((e.ctrlKey || e.metaKey) && !e.altKey) {
-        const key = e.key.toLowerCase();
-        if (key === 'z' && !e.shiftKey) {
-          e.preventDefault();
-          undo();
-          return;
-        }
-        if ((key === 'z' && e.shiftKey) || key === 'y') {
-          e.preventDefault();
-          redo();
-          return;
-        }
-      }
-
-      if (e.code === 'Space') {
-        e.preventDefault();
-        setIsPlaying((p) => !p);
-      } else if (e.code === 'ArrowLeft') {
-        e.preventDefault();
-        setIsPlaying(false);
-        seekTo(currentTimeSec - 1 / 30);
-      } else if (e.code === 'ArrowRight') {
-        e.preventDefault();
-        setIsPlaying(false);
-        seekTo(currentTimeSec + 1 / 30);
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [currentTimeSec, seekTo, undo, redo]);
+  // Keyboard shortcuts effect is mounted below after action handlers are defined.
 
   const handleUploadSrtFile = async (file: File) => {
     const text = await file.text();
@@ -917,26 +889,50 @@ export default function App() {
     if (tpl.typography.fontFamily) {
       ensureGoogleFontLoaded(tpl.typography.fontFamily);
     }
-    setProject((p) => ({
-      ...p,
-      typography: { ...p.typography, ...tpl.typography },
-      motion: { ...p.motion, ...tpl.motion },
-      background: { ...p.background, ...tpl.background },
-      effects: {
-        vignette: 0.22,
-        filmGrain: 0.06,
-        scanlines: 0,
-        chromaticAberration: 0,
-        cameraFloat: false,
-        textCardOpacity: 0,
-        textCardColor: '#0B0C0F',
-        ...p.effects,
-        ...tpl.effects,
-      },
-      progressBar: tpl.progressBar
-        ? { ...DEFAULT_PROGRESS_BAR, ...p.progressBar, ...tpl.progressBar }
-        : p.progressBar,
-    }));
+    const matchedCombo = tpl.soundscapePresetId
+      ? SOUNDSCAPE_COMBOS.find((c) => c.id === tpl.soundscapePresetId)
+      : null;
+
+    setProject((p) => {
+      const canApplySoundscape =
+        Boolean(matchedCombo) &&
+        !userUploadedBgAudioRef.current &&
+        (!p.soundscape?.enabled || Boolean(p.soundscape?.presetId));
+
+      const nextBg = { ...p.background, ...tpl.background };
+      if (canApplySoundscape && nextBg.bgAudioVolume <= 0.01) {
+        nextBg.bgAudioVolume = 0.28;
+      }
+
+      return {
+        ...p,
+        typography: { ...p.typography, ...tpl.typography },
+        motion: { ...p.motion, ...tpl.motion },
+        background: nextBg,
+        effects: {
+          vignette: 0.22,
+          filmGrain: 0.06,
+          scanlines: 0,
+          chromaticAberration: 0,
+          cameraFloat: false,
+          textCardOpacity: 0,
+          textCardColor: '#0B0C0F',
+          ...p.effects,
+          ...tpl.effects,
+        },
+        progressBar: tpl.progressBar
+          ? { ...DEFAULT_PROGRESS_BAR, ...p.progressBar, ...tpl.progressBar }
+          : p.progressBar,
+        soundscape:
+          canApplySoundscape && matchedCombo
+            ? {
+                enabled: true,
+                presetId: matchedCombo.id,
+                layers: { ...matchedCombo.layers },
+              }
+            : p.soundscape,
+      };
+    });
   };
 
   const handleExportProjectJson = () => {
@@ -1089,6 +1085,203 @@ export default function App() {
     ]
   );
 
+  const handleCenterInTikTokSafeZone = useCallback(() => {
+    setShowSafeGuides(true);
+    const activeCue = project.cues.find(
+      (c) => currentTimeSec >= c.startSec && currentTimeSec <= c.endSec
+    );
+    const targetCue = activeCue || project.cues.find((c) => c.id === selectedCueId) || null;
+    if (targetCue?.customPos) {
+      handleUpdateCue(
+        targetCue.id,
+        {
+          customPos: {
+            x: TIKTOK_SAFE_ZONE.centerX,
+            y: TIKTOK_SAFE_ZONE.centerY,
+          },
+        },
+        `center-safe-${targetCue.id}`
+      );
+    } else {
+      setProject(
+        (p) => ({
+          ...p,
+          typography: {
+            ...p.typography,
+            posX: TIKTOK_SAFE_ZONE.centerX,
+            posY: TIKTOK_SAFE_ZONE.centerY,
+          },
+        }),
+        { coalesceKey: 'center-safe-global' }
+      );
+    }
+  }, [project.cues, currentTimeSec, selectedCueId, setProject]);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      const isEditingText =
+        tag === 'INPUT' ||
+        tag === 'TEXTAREA' ||
+        tag === 'SELECT' ||
+        Boolean(target?.isContentEditable);
+
+      if (e.key === 'Escape') {
+        if (shortcutsOpen) {
+          e.preventDefault();
+          setShortcutsOpen(false);
+        } else if (templatesOpen) {
+          e.preventDefault();
+          setTemplatesOpen(false);
+        } else if (importOpen) {
+          e.preventDefault();
+          setImportOpen(false);
+        } else if (exportOpen) {
+          e.preventDefault();
+          setExportOpen(false);
+        } else if (isFullscreen) {
+          e.preventDefault();
+          setIsFullscreen(false);
+        }
+        return;
+      }
+
+      if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+        const lower = e.key.toLowerCase();
+        if (lower === 's') {
+          e.preventDefault();
+          handleExportProjectJson();
+          return;
+        }
+        if (lower === 'i' && !isEditingText) {
+          e.preventDefault();
+          setIsPlaying(false);
+          setImportOpen(true);
+          return;
+        }
+        if (lower === 'e' && e.shiftKey) {
+          e.preventDefault();
+          setIsPlaying(false);
+          setExportOpen(true);
+          return;
+        }
+      }
+
+      if (isEditingText) return;
+
+      if (e.key === '?' || e.key === 'F1') {
+        e.preventDefault();
+        if (!importOpen && !exportOpen && !templatesOpen) {
+          setShortcutsOpen((prev) => !prev);
+        }
+        return;
+      }
+
+      if (importOpen || exportOpen || shortcutsOpen || templatesOpen) return;
+
+      if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+        const key = e.key.toLowerCase();
+        if (key === 'z' && !e.shiftKey) {
+          e.preventDefault();
+          undo();
+          return;
+        }
+        if ((key === 'z' && e.shiftKey) || key === 'y') {
+          e.preventDefault();
+          redo();
+          return;
+        }
+        return;
+      }
+
+      if (e.altKey) return;
+
+      if (e.code === 'Space') {
+        e.preventDefault();
+        setIsPlaying((p) => !p);
+        return;
+      }
+
+      if (e.code === 'ArrowLeft') {
+        e.preventDefault();
+        setIsPlaying(false);
+        seekTo(currentTimeSec - (e.shiftKey ? 0.5 : 1 / 30));
+        return;
+      }
+
+      if (e.code === 'ArrowRight') {
+        e.preventDefault();
+        setIsPlaying(false);
+        seekTo(currentTimeSec + (e.shiftKey ? 0.5 : 1 / 30));
+        return;
+      }
+
+      if (e.code === 'ArrowUp' || e.key === '[') {
+        e.preventDefault();
+        if (project.cues.length > 0) {
+          const idx = project.cues.findIndex((c) => c.id === selectedCueId);
+          const prevIdx = idx > 0 ? idx - 1 : 0;
+          handleQuickSelectCue(project.cues[prevIdx].id);
+        }
+        return;
+      }
+
+      if (e.code === 'ArrowDown' || e.key === ']') {
+        e.preventDefault();
+        if (project.cues.length > 0) {
+          const idx = project.cues.findIndex((c) => c.id === selectedCueId);
+          const nextIdx =
+            idx >= 0 && idx < project.cues.length - 1 ? idx + 1 : project.cues.length - 1;
+          handleQuickSelectCue(project.cues[nextIdx].id);
+        }
+        return;
+      }
+
+      const lower = e.key.toLowerCase();
+      if (lower === '1') {
+        setActiveTab('cue');
+      } else if (lower === '2') {
+        setActiveTab('typography');
+      } else if (lower === '3') {
+        setActiveTab('background');
+      } else if (lower === 'l') {
+        setIsLooping((v) => !v);
+      } else if (lower === 'm') {
+        setIsMuted((v) => !v);
+      } else if (lower === 'f') {
+        e.preventDefault();
+        setIsFullscreen((v) => !v);
+      } else if (lower === 'g') {
+        setShowSafeGuides((v) => !v);
+      } else if (lower === 't') {
+        e.preventDefault();
+        handleCenterInTikTokSafeZone();
+      } else if (lower === 'n') {
+        e.preventDefault();
+        handleAddCue();
+      } else if (lower === 's') {
+        if (selectedCueId) {
+          e.preventDefault();
+          handleSplitCue(selectedCueId);
+        }
+      } else if (lower === 'j') {
+        if (selectedCueId) {
+          e.preventDefault();
+          handleMergeNextCue(selectedCueId);
+        }
+      } else if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (selectedCueId) {
+          e.preventDefault();
+          handleDeleteCue(selectedCueId);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  });
+
   const handleMobileTabSelect = (section: MobileSection) => {
     setMobileSection(section);
     if (section === 'cueEdit') {
@@ -1122,7 +1315,9 @@ export default function App() {
         onExportProjectJson={handleExportProjectJson}
         onImportProjectJson={handleImportProjectJson}
         onOpenImport={() => setImportOpen(true)}
+        onOpenTemplates={() => setTemplatesOpen(true)}
         onResetDemo={handleResetDemo}
+        onOpenShortcuts={() => setShortcutsOpen(true)}
         onOpenExport={() => {
           setIsPlaying(false);
           setExportOpen(true);
@@ -1176,6 +1371,7 @@ export default function App() {
 
         <PreviewStage
           project={project}
+          projectName={project.name}
           currentTimeSec={currentTimeSec}
           totalDurationSec={totalDurationSec}
           isPlaying={isPlaying}
@@ -1191,6 +1387,10 @@ export default function App() {
           onStepFrame={(delta) => {
             setIsPlaying(false);
             seekTo(currentTimeSec + delta / 30);
+          }}
+          onSeek={(t) => {
+            setIsPlaying(false);
+            seekTo(t);
           }}
           onToggleLoop={() => setIsLooping((l) => !l)}
           onToggleMute={() => setIsMuted((m) => !m)}
@@ -1213,6 +1413,10 @@ export default function App() {
             setActiveTab('cue');
             setMobileSection('cueEdit');
           }}
+          showGuides={showSafeGuides}
+          onToggleGuides={() => setShowSafeGuides((v) => !v)}
+          isFullscreen={isFullscreen}
+          onToggleFullscreen={() => setIsFullscreen((v) => !v)}
         />
 
         <InspectorPanel
@@ -1325,6 +1529,7 @@ export default function App() {
             );
           }}
           onApplyTemplate={handleApplyTemplate}
+          onOpenTemplatesModal={() => setTemplatesOpen(true)}
           onUploadBgVideo={handleUploadBgVideo}
           onClearBgVideo={handleClearBgVideo}
           onUploadBgAudio={handleUploadBgAudio}
@@ -1467,6 +1672,17 @@ export default function App() {
           onClose={() => setExportOpen(false)}
         />
       )}
+
+      <StyleTemplatesModal
+        isOpen={templatesOpen}
+        typography={project.typography}
+        motion={project.motion}
+        background={project.background}
+        onApplyTemplate={handleApplyTemplate}
+        onClose={() => setTemplatesOpen(false)}
+      />
+
+      <ShortcutsModal isOpen={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
     </div>
   );
 }

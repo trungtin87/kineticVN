@@ -2,9 +2,13 @@ import React, { useMemo, useRef, useState } from 'react';
 import {
   AlignLeft,
   Braces,
+  ChevronDown,
+  ChevronUp,
   Code2,
+  CornerDownLeft,
   Download,
   FileText,
+  FolderOpen,
   Highlighter,
   Music,
   Sparkles,
@@ -57,6 +61,7 @@ export const ImportSrtModal: React.FC<ImportSrtModalProps> = ({
     start: 0,
     end: 0,
   });
+  const [showMobileFiles, setShowMobileFiles] = useState(false);
   const [jsonError, setJsonError] = useState<string | null>(null);
 
   const scriptTextareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -115,15 +120,39 @@ export const ImportSrtModal: React.FC<ImportSrtModalProps> = ({
     });
   };
 
+  const handleInsertSplitNewline = () => {
+    const isScript = mode === 'script';
+    const refEl = isScript ? scriptTextareaRef.current : srtTextareaRef.current;
+    const currentText = isScript ? scriptText : srtText;
+    const start = refEl?.selectionStart ?? selection.start;
+    const end = refEl?.selectionEnd ?? selection.end;
+
+    const nextText = currentText.slice(0, start) + '\n' + currentText.slice(end);
+    const nextPos = start + 1;
+
+    if (isScript) {
+      setScriptText(nextText);
+    } else {
+      setSrtText(nextText);
+    }
+    setSelection({ start: nextPos, end: nextPos });
+
+    window.requestAnimationFrame(() => {
+      const target = isScript ? scriptTextareaRef.current : srtTextareaRef.current;
+      if (target) {
+        target.focus();
+        target.setSelectionRange(nextPos, nextPos);
+      }
+    });
+  };
+
   const handleSwitchMode = (nextMode: EditorMode) => {
     if (nextMode === mode) return;
     if (nextMode === 'srt') {
-      // Sync calibrated cues (preserving [brackets]) into full SRT preview
       if (calibratedCues.length > 0) {
         setSrtText(exportSrt(calibratedCues, true));
       }
     } else {
-      // Convert edited SRT back into plain script lines
       const parsed = parseSrt(srtText, emphasisTemplate);
       if (parsed.length > 0) {
         setScriptText(cuesToScriptText(parsed));
@@ -156,12 +185,12 @@ export const ImportSrtModal: React.FC<ImportSrtModalProps> = ({
 
   const hasRangeSelection = selection.end > selection.start;
   const bracketButtonLabel = hasRangeSelection
-    ? 'Bọc / Bỏ [cụm đã bôi]'
+    ? 'Bọc [cụm]'
     : activeWordToken
     ? activeWordToken.emphasized
       ? `Bỏ [${activeWordToken.word}]`
       : `Bọc [${activeWordToken.word}]`
-    : 'Nhấn [từ] tại con trỏ';
+    : 'Bọc [từ]';
 
   const avgCueDuration =
     calibratedCues.length > 0
@@ -169,57 +198,76 @@ export const ImportSrtModal: React.FC<ImportSrtModalProps> = ({
       : 0;
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-3 sm:p-4">
-      <div className="w-full max-w-2xl bg-[#14171F] border border-white/12 rounded-lg overflow-hidden shadow-2xl flex flex-col max-h-[92dvh]">
+    <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-0 sm:p-4">
+      <div className="w-full max-w-2xl bg-[#14171F] sm:border border-white/12 rounded-none sm:rounded-lg overflow-hidden shadow-2xl flex flex-col h-[100dvh] sm:h-auto sm:max-h-[92dvh]">
         {/* Modal Header */}
-        <div className="px-4 sm:px-5 py-3 border-b border-white/8 flex items-center justify-between shrink-0">
-          <h3 className="font-display text-sm font-semibold text-[#F4F5F7]">
-            Soạn thảo nội dung &amp; Nhận dạng SRT trực tiếp
+        <div className="px-3 sm:px-5 py-2.5 sm:py-3 border-b border-white/8 flex items-center justify-between shrink-0 bg-[#111318]">
+          <h3 className="font-display text-sm font-semibold text-[#F4F5F7] truncate pr-2">
+            Soạn thảo nội dung &amp; SRT trực tiếp
           </h3>
           <button
             type="button"
             onClick={onClose}
-            className="p-1 text-[#8E95A5] hover:text-white rounded cursor-pointer"
+            aria-label="Đóng"
+            className="p-1.5 text-[#8E95A5] hover:text-white rounded cursor-pointer shrink-0"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        {/* Mode Switcher */}
-        <div className="px-4 sm:px-5 pt-3 pb-0 border-b border-white/8 bg-[#10131A] flex items-center gap-2 shrink-0">
-          <button
-            type="button"
-            onClick={() => handleSwitchMode('script')}
-            className={`px-3 py-2 text-xs font-semibold border-b-2 flex items-center gap-1.5 transition-colors cursor-pointer ${
-              mode === 'script'
-                ? 'border-[#FF5A1F] text-white'
-                : 'border-transparent text-[#8E95A5] hover:text-white'
-            }`}
-          >
-            <AlignLeft className="w-3.5 h-3.5 text-[#FF5A1F]" />
-            <span>Soạn nội dung nhanh (1 dòng = 1 câu)</span>
-          </button>
+        {/* Mode Switcher + Mobile Files Toggle */}
+        <div className="px-3 sm:px-5 pt-1.5 sm:pt-2.5 pb-0 border-b border-white/8 bg-[#10131A] flex items-center justify-between gap-2 shrink-0">
+          <div className="flex items-center gap-1 sm:gap-2 min-w-0">
+            <button
+              type="button"
+              onClick={() => handleSwitchMode('script')}
+              className={`px-2.5 sm:px-3 py-2 text-xs font-semibold border-b-2 flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap ${
+                mode === 'script'
+                  ? 'border-[#FF5A1F] text-white'
+                  : 'border-transparent text-[#8E95A5] hover:text-white'
+              }`}
+            >
+              <AlignLeft className="w-3.5 h-3.5 text-[#FF5A1F] shrink-0" />
+              <span className="sm:hidden">Soạn nhanh</span>
+              <span className="hidden sm:inline">Soạn nội dung nhanh (1 dòng = 1 câu)</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleSwitchMode('srt')}
+              className={`px-2.5 sm:px-3 py-2 text-xs font-semibold border-b-2 flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap ${
+                mode === 'srt'
+                  ? 'border-[#38BDF8] text-white'
+                  : 'border-transparent text-[#8E95A5] hover:text-white'
+              }`}
+            >
+              <Code2 className="w-3.5 h-3.5 text-[#38BDF8] shrink-0" />
+              <span className="sm:hidden">Mã .SRT</span>
+              <span className="hidden sm:inline">Mã nguồn .SRT đầy đủ</span>
+            </button>
+          </div>
 
           <button
             type="button"
-            onClick={() => handleSwitchMode('srt')}
-            className={`px-3 py-2 text-xs font-semibold border-b-2 flex items-center gap-1.5 transition-colors cursor-pointer ${
-              mode === 'srt'
-                ? 'border-[#38BDF8] text-white'
-                : 'border-transparent text-[#8E95A5] hover:text-white'
-            }`}
+            onClick={() => setShowMobileFiles((v) => !v)}
+            className="sm:hidden mb-1 px-2 py-1 rounded bg-[#1A1E28] border border-white/10 text-[11px] text-[#D5D9E2] flex items-center gap-1 shrink-0 cursor-pointer"
           >
-            <Code2 className="w-3.5 h-3.5 text-[#38BDF8]" />
-            <span>Mã nguồn .SRT đầy đủ</span>
+            <FolderOpen className="w-3 h-3 text-[#38BDF8]" />
+            <span>Tệp</span>
+            {showMobileFiles ? (
+              <ChevronUp className="w-3 h-3 text-[#8E95A5]" />
+            ) : (
+              <ChevronDown className="w-3 h-3 text-[#8E95A5]" />
+            )}
           </button>
         </div>
 
         {/* Modal Body */}
-        <div className="p-4 sm:p-5 space-y-3.5 overflow-y-auto min-h-0 flex-1">
-          {/* File Pickers Row */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+        <div className="p-2.5 sm:p-5 flex flex-col gap-2 sm:gap-3 min-h-0 flex-1 overflow-y-auto">
+          {/* File Pickers Row (collapsible on small mobile screens to save typing height) */}
+          <div className={`${showMobileFiles ? 'grid' : 'hidden'} sm:grid grid-cols-1 sm:grid-cols-3 gap-1.5 sm:gap-2 shrink-0`}>
             <label className="flex items-center justify-center gap-2 py-2 px-3 bg-[#1A1E28] hover:bg-[#222735] border border-white/10 rounded-md cursor-pointer text-xs font-medium text-[#E2E5EC]">
-              <FileText className="w-4 h-4 text-[#FF5A1F]" />
+              <FileText className="w-4 h-4 text-[#FF5A1F] shrink-0" />
               <span>Chọn file .SRT / .TXT</span>
               <input
                 type="file"
@@ -238,6 +286,7 @@ export const ImportSrtModal: React.FC<ImportSrtModalProps> = ({
                       setScriptText(raw);
                       setMode('script');
                     }
+                    setShowMobileFiles(false);
                   }
                   e.target.value = '';
                 }}
@@ -246,7 +295,7 @@ export const ImportSrtModal: React.FC<ImportSrtModalProps> = ({
 
             {onImportWordJson && (
               <label className="flex items-center justify-center gap-2 py-2 px-3 bg-[#1A1E28] hover:bg-[#222735] border border-white/10 rounded-md cursor-pointer text-xs font-medium text-[#E2E5EC]">
-                <Braces className="w-4 h-4 text-[#34D399]" />
+                <Braces className="w-4 h-4 text-[#34D399] shrink-0" />
                 <span>JSON Word-Timing</span>
                 <input
                   type="file"
@@ -273,7 +322,7 @@ export const ImportSrtModal: React.FC<ImportSrtModalProps> = ({
             )}
 
             <label className="flex items-center justify-center gap-2 py-2 px-3 bg-[#1A1E28] hover:bg-[#222735] border border-white/10 rounded-md cursor-pointer text-xs font-medium text-[#E2E5EC]">
-              <Music className="w-4 h-4 text-[#38BDF8]" />
+              <Music className="w-4 h-4 text-[#38BDF8] shrink-0" />
               <span className="truncate">
                 {audioName ? `Audio: ${audioName}` : 'Chọn Audio'}
               </span>
@@ -283,7 +332,10 @@ export const ImportSrtModal: React.FC<ImportSrtModalProps> = ({
                 className="hidden"
                 onChange={(e) => {
                   const f = e.target.files?.[0];
-                  if (f) onUploadAudio(f);
+                  if (f) {
+                    onUploadAudio(f);
+                    setShowMobileFiles(false);
+                  }
                   e.target.value = '';
                 }}
               />
@@ -291,46 +343,70 @@ export const ImportSrtModal: React.FC<ImportSrtModalProps> = ({
           </div>
 
           {jsonError && (
-            <p className="text-xs text-red-400 bg-red-500/10 border border-red-400/25 rounded px-3 py-2">
+            <p className="text-xs text-red-400 bg-red-500/10 border border-red-400/25 rounded px-3 py-2 shrink-0">
               {jsonError}
             </p>
           )}
 
-          {/* Cursor-aware Quick Emphasis Action Bar */}
-          <div className="p-2.5 bg-[#0E1015] border border-white/10 rounded-md flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-2 flex-wrap">
+          {/* Cursor-aware Quick Emphasis & Split Action Bar */}
+          <div className="p-1.5 sm:p-2.5 bg-[#0E1015] border border-white/10 rounded-md flex items-center justify-between gap-1.5 shrink-0">
+            <div className="flex items-center gap-1.5 min-w-0">
               <button
                 type="button"
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => applyToggleBracket()}
-                className={`px-3 py-1.5 rounded text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors ${
+                className={`px-2.5 sm:px-3 py-1.5 rounded text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap shrink-0 ${
                   activeWordToken?.emphasized
                     ? 'bg-[#262B38] hover:bg-[#313849] text-[#FF8C66] border border-[#FF5A1F]/45'
                     : 'bg-[#FF5A1F] hover:bg-[#FF703B] text-white'
                 }`}
               >
                 <Highlighter className="w-3.5 h-3.5 shrink-0" />
-                <span>{bracketButtonLabel}</span>
+                <span className="max-w-[140px] sm:max-w-none truncate">{bracketButtonLabel}</span>
               </button>
-              <span className="text-[11px] text-[#8E95A5]">
-                Phím tắt: <kbd className="px-1.5 py-0.5 bg-[#171A21] border border-white/10 rounded text-[10px] text-[#D5D9E2]">Ctrl+E</kbd>
+
+              {mode === 'script' && (
+                <button
+                  type="button"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={handleInsertSplitNewline}
+                  title="Xuống dòng tách thành câu mới"
+                  className="px-2 sm:px-2.5 py-1.5 rounded text-xs font-medium bg-[#171A21] hover:bg-[#222733] border border-white/10 text-[#E2E5EC] flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0"
+                >
+                  <CornerDownLeft className="w-3.5 h-3.5 text-[#34D399]" />
+                  <span>Tách câu</span>
+                </button>
+              )}
+
+              <span className="hidden md:inline text-[11px] text-[#8E95A5]">
+                <kbd className="px-1.5 py-0.5 bg-[#171A21] border border-white/10 rounded text-[10px] text-[#D5D9E2]">
+                  Ctrl+E
+                </kbd>
               </span>
             </div>
 
-            <button
-              type="button"
-              onClick={handleDownloadSrt}
-              className="text-xs text-[#38BDF8] hover:underline flex items-center gap-1 cursor-pointer"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span>Xuất tải .SRT</span>
-            </button>
+            <div className="flex items-center gap-2 shrink-0">
+              {mode === 'script' && (
+                <span className="sm:hidden text-[10.5px] font-mono-tabular text-[#34D399] whitespace-nowrap">
+                  {calibratedCues.length} câu · {formatTimecodeShort(audioDurationSec)}
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={handleDownloadSrt}
+                title="Xuất tải .SRT"
+                className="p-1.5 sm:p-0 text-xs text-[#38BDF8] hover:underline flex items-center gap-1 cursor-pointer shrink-0"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Xuất tải .SRT</span>
+              </button>
+            </div>
           </div>
 
           {/* Editor Area */}
           {mode === 'script' ? (
-            <div className="space-y-2.5">
-              <div className="flex items-center justify-between text-[11px] text-[#9BA3B4] flex-wrap gap-2">
+            <div className="flex flex-col gap-2 flex-1 min-h-0">
+              <div className="hidden sm:flex items-center justify-between text-[11px] text-[#9BA3B4] flex-wrap gap-2 shrink-0">
                 <span>
                   Chỉ hiển thị nội dung chữ — mỗi lần bấm <strong>Enter</strong> xuống dòng sẽ tách thành 1 câu riêng.
                 </span>
@@ -342,7 +418,7 @@ export const ImportSrtModal: React.FC<ImportSrtModalProps> = ({
 
               <textarea
                 ref={scriptTextareaRef}
-                rows={9}
+                rows={7}
                 value={scriptText}
                 onChange={(e) => {
                   setScriptText(e.target.value);
@@ -363,25 +439,25 @@ export const ImportSrtModal: React.FC<ImportSrtModalProps> = ({
                     );
                   }
                 }}
-                className="w-full bg-[#0D0F14] border border-white/12 focus:border-[#FF5A1F] rounded-md p-3 text-sm text-[#F4F5F7] focus:outline-none leading-7 resize-y"
-                placeholder={`Gõ hoặc dán lời thoại tại đây...\nMỗi dòng (Enter) là 1 câu phụ đề\nĐặt con trỏ vào từ bất kỳ rồi bấm "Bọc [từ]" để nhấn mạnh`}
+                className="w-full flex-1 min-h-[140px] sm:min-h-[210px] bg-[#0D0F14] border border-white/12 focus:border-[#FF5A1F] rounded-md p-2.5 sm:p-3 text-base sm:text-sm text-[#F4F5F7] focus:outline-none leading-6 sm:leading-7 resize-none sm:resize-y"
+                placeholder={`Gõ hoặc dán lời thoại tại đây...\nMỗi dòng (Enter) là 1 câu phụ đề\nChạm vào từ bất kỳ rồi bấm "Bọc [từ]" để nhấn mạnh`}
               />
 
-              {/* Interactive Word Chips for the Line Under Cursor */}
+              {/* Interactive Word Chips for Line Under Cursor — single-row horizontal scroll on phone */}
               {cursorLineInfo.tokens.length > 0 && (
-                <div className="p-2.5 bg-[#0E1015] border border-white/8 rounded-md space-y-1.5">
+                <div className="p-2 bg-[#0E1015] border border-white/8 rounded-md space-y-1 shrink-0">
                   <div className="flex items-center justify-between text-[10.5px] text-[#8E95A5]">
                     <span>
-                      Chọn nhanh từ trên <strong className="text-[#D5D9E2]">Dòng #{cursorLineInfo.lineIndex + 1}</strong> để bọc <code className="text-[#FF5A1F]">[ ]</code>:
+                      Dòng <strong className="text-[#D5D9E2]">#{cursorLineInfo.lineIndex + 1}</strong> · chạm từ để bọc <code className="text-[#FF5A1F]">[ ]</code>
                     </span>
                     {calibratedCues[cursorLineInfo.lineIndex] && (
                       <span className="font-mono-tabular text-[#38BDF8]">
-                        Dự kiến: {formatTimecodeShort(calibratedCues[cursorLineInfo.lineIndex].startSec)} →{' '}
+                        {formatTimecodeShort(calibratedCues[cursorLineInfo.lineIndex].startSec)} →{' '}
                         {formatTimecodeShort(calibratedCues[cursorLineInfo.lineIndex].endSec)}
                       </span>
                     )}
                   </div>
-                  <div className="flex flex-wrap gap-1.5">
+                  <div className="flex flex-nowrap sm:flex-wrap overflow-x-auto sm:overflow-visible gap-1.5 pb-0.5">
                     {cursorLineInfo.tokens.map((tok, idx) => {
                       const isCursorHere = idx === cursorLineInfo.activeTokenIdx;
                       return (
@@ -390,7 +466,7 @@ export const ImportSrtModal: React.FC<ImportSrtModalProps> = ({
                           type="button"
                           onMouseDown={(e) => e.preventDefault()}
                           onClick={() => applyToggleBracket(tok.absStart, tok.absEnd)}
-                          className={`px-2 py-0.5 text-xs rounded border transition-colors cursor-pointer ${
+                          className={`px-2.5 py-1 sm:py-0.5 text-xs rounded border transition-colors cursor-pointer whitespace-nowrap shrink-0 min-h-[30px] sm:min-h-0 ${
                             tok.emphasized
                               ? 'bg-[#FF5A1F]/20 border-[#FF5A1F] text-[#FF9B76] font-semibold'
                               : isCursorHere
@@ -407,13 +483,13 @@ export const ImportSrtModal: React.FC<ImportSrtModalProps> = ({
               )}
             </div>
           ) : (
-            <div className="space-y-1.5">
-              <div className="text-xs text-[#9BA3B4]">
-                Mẹo: Bọc từ trong ngoặc vuông <code className="text-[#FF5A1F]">[nhấn mạnh]</code> hoặc đặt con trỏ rồi bấm nút Bọc bên trên.
+            <div className="flex flex-col gap-1.5 flex-1 min-h-0">
+              <div className="text-[11px] sm:text-xs text-[#9BA3B4] shrink-0">
+                Bọc từ trong ngoặc vuông <code className="text-[#FF5A1F]">[nhấn mạnh]</code> hoặc đặt con trỏ rồi bấm Bọc [từ].
               </div>
               <textarea
                 ref={srtTextareaRef}
-                rows={10}
+                rows={9}
                 value={srtText}
                 onChange={(e) => {
                   setSrtText(e.target.value);
@@ -434,7 +510,7 @@ export const ImportSrtModal: React.FC<ImportSrtModalProps> = ({
                     );
                   }
                 }}
-                className="w-full bg-[#0D0F14] border border-white/12 focus:border-[#38BDF8] rounded-md p-3 text-xs font-mono-tabular text-[#E2E5EC] focus:outline-none leading-relaxed resize-y"
+                className="w-full flex-1 min-h-[160px] sm:min-h-[220px] bg-[#0D0F14] border border-white/12 focus:border-[#38BDF8] rounded-md p-2.5 sm:p-3 text-sm sm:text-xs font-mono-tabular text-[#E2E5EC] focus:outline-none leading-relaxed resize-none sm:resize-y"
                 placeholder={`1\n00:00:00,500 --> 00:00:03,000\nNhập nội dung [SRT] tại đây`}
               />
             </div>
@@ -442,8 +518,8 @@ export const ImportSrtModal: React.FC<ImportSrtModalProps> = ({
         </div>
 
         {/* Footer */}
-        <div className="px-4 sm:px-5 py-3 border-t border-white/8 flex flex-wrap items-center justify-between gap-2 bg-[#111318] shrink-0">
-          <div className="text-[11px] text-[#8E95A5] flex items-center gap-1.5">
+        <div className="px-3 sm:px-5 py-2.5 sm:py-3 border-t border-white/8 flex items-center justify-between gap-2 bg-[#111318] shrink-0">
+          <div className="hidden sm:flex text-[11px] text-[#8E95A5] items-center gap-1.5">
             <Sparkles className="w-3.5 h-3.5 text-[#34D399] shrink-0" />
             <span>
               {mode === 'script'
@@ -452,7 +528,7 @@ export const ImportSrtModal: React.FC<ImportSrtModalProps> = ({
             </span>
           </div>
 
-          <div className="flex items-center gap-2 ml-auto">
+          <div className="flex items-center gap-2 w-full sm:w-auto sm:ml-auto">
             <button
               type="button"
               onClick={onClose}
@@ -474,7 +550,7 @@ export const ImportSrtModal: React.FC<ImportSrtModalProps> = ({
                   onClose();
                 }
               }}
-              className="px-4 py-2 bg-[#FF5A1F] hover:bg-[#E84D14] disabled:opacity-40 text-white text-xs font-semibold rounded-md cursor-pointer disabled:cursor-not-allowed"
+              className="flex-1 sm:flex-none px-4 py-2 bg-[#FF5A1F] hover:bg-[#E84D14] disabled:opacity-40 text-white text-xs font-semibold rounded-md cursor-pointer disabled:cursor-not-allowed text-center"
             >
               {mode === 'script'
                 ? 'Cân Audio & Lưu vào Dự án'
