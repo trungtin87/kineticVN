@@ -580,6 +580,20 @@ export const ImportSrtModal: React.FC<ImportSrtModalProps> = ({
                 }}
                 onKeyDown={(e) => {
                   if (
+                    e.key === 'Enter' &&
+                    e.shiftKey &&
+                    !e.ctrlKey &&
+                    !e.metaKey &&
+                    !e.altKey
+                  ) {
+                    e.preventDefault();
+                    handleInsertSplitNewline(
+                      e.currentTarget.selectionStart ?? lastValidSelectionRef.current.start,
+                      e.currentTarget.selectionEnd ?? lastValidSelectionRef.current.end
+                    );
+                    return;
+                  }
+                  if (
                     (e.ctrlKey || e.metaKey) &&
                     (e.key.toLowerCase() === 'e' || e.key.toLowerCase() === 'b')
                   ) {

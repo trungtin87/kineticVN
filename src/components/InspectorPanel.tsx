@@ -568,11 +568,11 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
               <>
                 {/* 1. Text & Line Breaks */}
                 <div className="space-y-2.5">
-                  <div className="flex items-center justify-between">
-                    <label className="text-xs font-semibold text-[#E2E5EC]">
-                      Nội dung &amp; Xuống dòng (Enter)
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-xs font-semibold text-[#E2E5EC] truncate">
+                      Nội dung (Enter: xuống dòng · Shift+Enter: tách câu)
                     </label>
-                    <span className="text-[11px] font-mono-tabular text-[#8E95A5]">
+                    <span className="text-[11px] font-mono-tabular text-[#8E95A5] shrink-0">
                       {(selectedCue.endSec - selectedCue.startSec).toFixed(2)}s
                     </span>
                   </div>
@@ -598,6 +598,33 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                     onKeyUp={(e) => syncCueCursorFromEl(e.currentTarget)}
                     onKeyDown={(e) => {
                       if (
+                        e.key === 'Enter' &&
+                        e.shiftKey &&
+                        !e.ctrlKey &&
+                        !e.metaKey &&
+                        !e.altKey
+                      ) {
+                        e.preventDefault();
+                        const cursorPos =
+                          e.currentTarget.selectionStart ?? lastCueCursorRef.current;
+                        const liveSplit = getCueSplitPointFromCursor(
+                          e.currentTarget.value,
+                          cursorPos
+                        );
+                        if (
+                          onSplitCue &&
+                          liveSplit.canSplit &&
+                          selectedCue.endSec - selectedCue.startSec >= 0.24
+                        ) {
+                          pendingCueCursorRef.current = 0;
+                          setCueCursorBump((v) => v + 1);
+                          onSplitCue(selectedCue.id, liveSplit.splitWordCount);
+                        } else if (liveSplit.words.length >= 2) {
+                          moveCueCursorTo(liveSplit.snappedCursorPos);
+                        }
+                        return;
+                      }
+                      if (
                         (e.ctrlKey || e.metaKey) &&
                         (e.key.toLowerCase() === 'e' || e.key.toLowerCase() === 'b') &&
                         selectedTextWordIndices.length > 0
@@ -607,7 +634,7 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                       }
                     }}
                     className="w-full bg-[#171A21] border border-white/10 focus:border-[#FF5A1F] rounded-md p-2.5 text-sm text-[#F4F5F7] leading-relaxed focus:outline-none resize-y"
-                    placeholder="Nhập chữ, bôi đen cụm từ để nhấn nhanh, hoặc Enter để xuống dòng..."
+                    placeholder="Nhập chữ, bôi đen cụm từ để nhấn nhanh, Enter để xuống dòng hoặc Shift+Enter để tách thành câu mới..."
                   />
 
                   {/* Cursor Split Control Bar (works smoothly on both phone touch & PC) */}
@@ -803,13 +830,15 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                             disabled={!canCursorSplit}
                             onClick={() => {
                               if (canCursorSplit && cueSplitInfo) {
+                                pendingCueCursorRef.current = 0;
+                                setCueCursorBump((v) => v + 1);
                                 onSplitCue(selectedCue.id, cueSplitInfo.splitWordCount);
                               }
                             }}
                             title={
                               cueSplitInfo?.canSplit
-                                ? `Tách câu sau "${cueSplitInfo.beforeWord}"`
-                                : 'Đặt con trỏ giữa 2 từ hoặc dùng ◀/▶ Từ để chọn điểm tách'
+                                ? `Tách câu sau "${cueSplitInfo.beforeWord}" (Shift+Enter)`
+                                : 'Đặt con trỏ giữa 2 từ hoặc dùng ◀/▶ Từ rồi bấm Shift+Enter để tách'
                             }
                             className="px-2.5 py-1.5 bg-[#171A21] hover:bg-[#20242E] disabled:opacity-35 border border-white/10 rounded text-[11px] text-[#E2E5EC] flex items-center justify-center gap-1.5 cursor-pointer disabled:cursor-not-allowed min-w-0"
                           >

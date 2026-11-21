@@ -34,6 +34,7 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
       { keys: ['S'], description: 'Tách đôi câu đang chọn tại đầu phát' },
       { keys: ['J'], description: 'Gộp câu đang chọn với câu kế tiếp' },
       { keys: ['Delete'], description: 'Xóa câu phụ đề đang chọn' },
+      { keys: ['Shift', 'Enter'], description: 'Tách thành câu mới tại con trỏ (Enter để xuống dòng)' },
       { keys: ['Ctrl', 'E'], description: 'Bọc / Bỏ [nhấn mạnh] khi đang gõ chữ' },
     ],
   },
